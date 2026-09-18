@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SnapDeploy Responsive Preview Test Fixture</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0B0F17;
+      color: #F8FAFC;
+      padding: 24px;
+      min-height: 100vh;
+    }
+    .header {
+      padding: 16px;
+      margin-bottom: 24px;
+      border-radius: 12px;
+      background: #111827;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    .badge {
+      display: inline-block;
+      padding: 4px 12px;
+      border-radius: 9999px;
+      font-size: 12px;
+      font-weight: 700;
+      font-family: monospace;
+      margin-bottom: 8px;
+    }
+    
+    /* Viewport Indicators: exactly one is visible per breakpoint */
+    .indicator {
+      display: none;
+    }
+    
+    /* Grid container */
+    .grid {
+      display: grid;
+      gap: 16px;
+      margin-top: 16px;
+    }
+    .card {
+      background: #1E293B;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+      padding: 20px;
+    }
+    .card-title {
+      font-weight: 600;
+      font-size: 16px;
+      margin-bottom: 8px;
+      color: #A78BFA;
+    }
+
+    /* 1. Desktop Layout (≥ 1024px) */
+    @media (min-width: 1024px) {
+      .indicator.desktop {
+        display: block;
+        background: rgba(139, 92, 246, 0.2);
+        color: #C4B5FD;
+        border: 1px solid rgba(139, 92, 246, 0.4);
+      }
+      .grid {
+        grid-template-columns: repeat(3, 1fr);
+      }
+    }
+
+    /* 2. Tablet Layout (640px to 1023px) */
+    @media (min-width: 640px) and (max-width: 1023px) {
+      .indicator.tablet {
+        display: block;
+        background: rgba(59, 130, 246, 0.2);
+        color: #93C5FD;
+        border: 1px solid rgba(59, 130, 246, 0.4);
+      }
+      .grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+    }
+
+    /* 3. Mobile Layout (< 640px) */
+    @media (max-width: 639px) {
+      .indicator.mobile {
+        display: block;
+        background: rgba(16, 185, 129, 0.2);
+        color: #6EE7B7;
+        border: 1px solid rgba(16, 185, 129, 0.4);
+      }
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div id="desktop-indicator" class="badge indicator desktop" data-testid="fixture-desktop-layout">
+      DESKTOP VIEWPORT (≥ 1024px)
+    </div>
+    <div id="tablet-indicator" class="badge indicator tablet" data-testid="fixture-tablet-layout">
+      TABLET VIEWPORT (640px – 1023px)
+    </div>
+    <div id="mobile-indicator" class="badge indicator mobile" data-testid="fixture-mobile-layout">
+      MOBILE VIEWPORT (&lt; 640px)
+    </div>
+    <h1 id="fixture-title" style="font-size: 20px; font-weight: bold; margin-top: 8px;">
+      Deterministic Responsive Test Application
+    </h1>
+    <p style="font-size: 13px; color: #94A3B8; margin-top: 4px;">
+      This fixture verifies that the iframe viewport receives true logical dimensions.
+    </p>
+  </div>
+
+  <!-- Application Routes & History Navigation Fixture -->
+  <div class="card" style="margin-bottom: 20px;" data-testid="fixture-routes-card">
+    <div class="card-title">Application Routes & History Navigation</div>
+    <p style="font-size: 12px; color: #94A3B8; margin-bottom: 12px;">
+      Verifies that Back/Forward buttons and URL bar synchronization work with true application routes.
+    </p>
+    <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+      <button 
+        id="nav-btn-home" 
+        data-testid="nav-btn-home" 
+        onclick="navigateToRoute('/')" 
+        style="padding: 6px 12px; background: #475569; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;"
+      >
+        / (Home)
+      </button>
+      <button 
+        id="nav-btn-page-a" 
+        data-testid="nav-btn-page-a" 
+        onclick="navigateToRoute('/page-a')" 
+        style="padding: 6px 12px; background: #3B82F6; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;"
+      >
+        /page-a
+      </button>
+      <button 
+        id="nav-btn-page-b" 
+        data-testid="nav-btn-page-b" 
+        onclick="navigateToRoute('/page-b')" 
+        style="padding: 6px 12px; background: #8B5CF6; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;"
+      >
+        /page-b
+      </button>
+      <button 
+        id="nav-btn-page-c" 
+        data-testid="nav-btn-page-c" 
+        onclick="navigateToRoute('/page-c')" 
+        style="padding: 6px 12px; background: #10B981; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;"
+      >
+        /page-c
+      </button>
+      <div style="font-family: monospace; font-size: 12px; color: #E2E8F0; margin-left: 8px; background: rgba(0,0,0,0.3); padding: 4px 8px; border-radius: 4px;">
+        Active Route: <span id="fixture-active-route" data-testid="fixture-active-route" style="color: #38BDF8; font-weight: bold;">/</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid" data-testid="fixture-grid">
+    <div class="card" data-testid="fixture-card-1">
+      <div class="card-title">Metrics & Telemetry</div>
+      <p style="font-size: 12px; color: #94A3B8;">Real-time stream aggregation active.</p>
+    </div>
+    <div class="card" data-testid="fixture-card-2">
+      <div class="card-title">Database Workers</div>
+      <p style="font-size: 12px; color: #94A3B8;">Cluster running across 3 regions.</p>
+    </div>
+    <div class="card" data-testid="fixture-card-3">
+      <div class="card-title">API Edge Routers</div>
+      <p style="font-size: 12px; color: #94A3B8;">Sub-millisecond p99 routing latency.</p>
+    </div>
+  </div>
+
+  <!-- Native Form Controls Section -->
+  <div class="card" style="margin-top: 24px;" data-testid="fixture-form-card">
+    <div class="card-title">Native Form Controls & Filters</div>
+    
+    <div style="display: flex; flex-wrap: wrap; gap: 16px; margin-top: 12px; align-items: flex-end;">
+      <!-- Category Select -->
+      <div style="flex: 1; min-width: 220px;">
+        <label for="fixture-category-select" style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 6px; color: #94A3B8;">
+          Filter by Category
+        </label>
+        <select 
+          id="fixture-category-select" 
+          data-testid="fixture-category-select" 
+          aria-label="Filter by Category"
+          style="width: 100%; padding: 8px 12px; border-radius: 8px; background: #0F172A; color: #F8FAFC; border: 1px solid rgba(255, 255, 255, 0.15); font-size: 13px; cursor: pointer;"
+        >
+          <option value="all">All Categories</option>
+          <option value="software">Software & SaaS Subscriptions</option>
+          <option value="cloud">Cloud Infrastructure & Compute</option>
+          <option value="consulting">Professional Consulting Services</option>
+          <option value="hardware">Hardware & Edge Devices</option>
+        </select>
+      </div>
+
+      <!-- Edge Aligned Select (Boundary test) -->
+      <div style="width: 200px;">
+        <label for="fixture-edge-select" style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 6px; color: #94A3B8;">
+          Billing Interval
+        </label>
+        <select 
+          id="fixture-edge-select" 
+          data-testid="fixture-edge-select" 
+          aria-label="Billing Interval"
+          style="width: 100%; padding: 8px 12px; border-radius: 8px; background: #0F172A; color: #F8FAFC; border: 1px solid rgba(255, 255, 255, 0.15); font-size: 13px; cursor: pointer;"
+        >
+          <option value="monthly">Monthly Recurring</option>
+          <option value="annual">Annual Commitment (Save 20%)</option>
+          <option value="quarterly">Quarterly Installments</option>
+        </select>
+      </div>
+
+      <!-- Text Input -->
+      <div style="flex: 1; min-width: 180px;">
+        <label for="fixture-text-input" style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 6px; color: #94A3B8;">
+          Search Invoices
+        </label>
+        <input 
+          type="text" 
+          id="fixture-text-input" 
+          data-testid="fixture-text-input" 
+          placeholder="e.g. INV-101" 
+          style="width: 100%; padding: 8px 12px; border-radius: 8px; background: #0F172A; color: #F8FAFC; border: 1px solid rgba(255, 255, 255, 0.15); font-size: 13px;"
+        />
+      </div>
+    </div>
+
+    <!-- Additional Interactive Controls -->
+    <div style="display: flex; flex-wrap: wrap; gap: 24px; margin-top: 16px; font-size: 13px; align-items: center;">
+      <label style="display: flex; items-center; gap: 8px; cursor: pointer;">
+        <input type="checkbox" id="fixture-checkbox" data-testid="fixture-checkbox" checked />
+        <span>Include Draft Invoices</span>
+      </label>
+      <label style="display: flex; items-center; gap: 8px; cursor: pointer;">
+        <input type="radio" name="region" id="fixture-radio-1" data-testid="fixture-radio-1" checked />
+        <span>US-East</span>
+      </label>
+      <label style="display: flex; items-center; gap: 8px; cursor: pointer;">
+        <input type="radio" name="region" id="fixture-radio-2" data-testid="fixture-radio-2" />
+        <span>EU-West</span>
+      </label>
+      <div style="display: flex; items-center; gap: 8px;">
+        <label for="fixture-date-input" style="font-size: 12px; color: #94A3B8;">Due Date:</label>
+        <input 
+          type="date" 
+          id="fixture-date-input" 
+          data-testid="fixture-date-input" 
+          value="2026-09-30" 
+          style="padding: 4px 8px; border-radius: 6px; background: #0F172A; color: #F8FAFC; border: 1px solid rgba(255, 255, 255, 0.15); font-size: 12px;"
+        />
+      </div>
+    </div>
+  </div>
+
+  <!-- Deterministic Nested Scroll Container -->
+  <div 
+    id="fixture-nested-scroll" 
+    data-testid="fixture-nested-scroll"
+    style="margin-top: 24px; height: 120px; overflow-y: auto; border: 1px solid rgba(255, 255, 255, 0.15); background: #0F172A; border-radius: 8px; padding: 12px;"
+  >
+    <div style="font-size: 13px; font-weight: 600; color: #38BDF8; margin-bottom: 8px;">Nested Scroll Container (Log Stream)</div>
+    <div style="height: 350px; font-size: 12px; font-family: monospace; color: #94A3B8; line-height: 1.6;">
+      <div>[00:01] System boot initialized...</div>
+      <div>[00:02] Kernel modules loaded.</div>
+      <div>[00:03] Network interfaces online.</div>
+      <div>[00:04] Establishing secure tunnel connection...</div>
+      <div>[00:05] Handshake verified.</div>
+      <div>[00:06] Monitoring active sockets...</div>
+      <div>[00:07] Streaming telemetry payload...</div>
+      <div>[00:08] Memory heap allocated: 42MB.</div>
+      <div>[00:09] Cache warmed.</div>
+      <div>[00:10] Heartbeat tick 200 OK.</div>
+    </div>
+  </div>
+
+  <button 
+    id="fixture-target-btn" 
+    data-testid="fixture-target-btn" 
+    style="margin-top: 24px; padding: 10px 20px; border-radius: 8px; background: #7C3AED; color: #FFF; border: none; font-weight: 600; cursor: pointer;"
+  >
+    Inspectable Target Button
+  </button>
+
+  <!-- Legitimate Vertical Scrolling Content Section -->
+  <div 
+    id="fixture-scroll-section"
+    data-testid="fixture-scroll-section" 
+    style="margin-top: 32px; padding: 20px; border-radius: 12px; background: #111827; border: 1px solid rgba(255, 255, 255, 0.05); min-height: 900px;"
+  >
+    <h2 style="font-size: 16px; font-weight: bold; color: #A78BFA; margin-bottom: 8px;">
+      Extended Data Feed (Legitimate Vertical Content)
+    </h2>
+    <p style="font-size: 12px; color: #94A3B8; margin-bottom: 24px;">
+      This section verifies that the logical application can legitimately scroll vertically inside the preview viewport.
+    </p>
+
+    <div style="margin-top: 600px; padding: 20px; background: #1E293B; border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.1);">
+      <h3 style="font-size: 14px; font-weight: 600; color: #F8FAFC; margin-bottom: 8px;">
+        Bottom Scrolled Controls
+      </h3>
+      <label for="fixture-bottom-select" style="display: block; font-size: 12px; margin-bottom: 6px; color: #94A3B8;">
+        Archive Status:
+      </label>
+      <select 
+        id="fixture-bottom-select" 
+        data-testid="fixture-bottom-select" 
+        style="padding: 8px 12px; border-radius: 6px; background: #0F172A; color: #F8FAFC; border: 1px solid rgba(255, 255, 255, 0.2); width: 220px;"
+      >
+        <option value="active">Active Retention</option>
+        <option value="archived">Archived to Cold Storage</option>
+        <option value="purged">Permanent Purge</option>
+      </select>
+    </div>
+  </div>
+
+  <script>
+    function updateRouteState() {
+      const path = window.location.pathname || '/';
+      const routeEl = document.getElementById('fixture-active-route');
+      if (routeEl) {
+        routeEl.textContent = path;
+      }
+    }
+
+    function navigateToRoute(path) {
+      window.history.pushState({ path }, '', path);
+      updateRouteState();
+      window.dispatchEvent(new PopStateEvent('popstate', { state: { path } }));
+    }
+
+    window.addEventListener('popstate', updateRouteState);
+    window.addEventListener('DOMContentLoaded', updateRouteState);
+    // Initial sync
+    updateRouteState();
+  </script>
+</body>
+</html>
