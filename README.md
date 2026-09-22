@@ -117,13 +117,20 @@ npm run dev
 
 ---
 
-## Deployment Guidelines
+## Production Deployment
 
-### Recommended Topology: Unified Single-Container Service
-Deploy the application as a long-lived container (Docker, Railway, Render, Fly.io, or AWS ECS):
+SnapDeploy AI is deployed and live in production as a Docker Web Service on Render:
+
+- **Live URL**: [https://snapdeploy-ai.onrender.com](https://snapdeploy-ai.onrender.com)
+- **Platform**: Render Web Service (Singapore, Docker Node 24 Alpine runtime)
+- **AI Model**: Google Gemini (`gemini-3.5-flash-lite`)
+- **Operational Runbook**: See [`DEPLOYMENT.md`](./DEPLOYMENT.md) for full deployment specifications, verified validation matrices, environment configurations, and incident response procedures.
+
+### Topology: Unified Single-Container Service
+Deploy the application as a container (Docker, Render, Railway, Fly.io, or AWS ECS):
 1. Run `npm run build` during container build stage.
-2. Set environment variables (`PORT`, `GEMINI_API_KEY`, `NODE_ENV=production`).
-3. Start the application via `npm start`.
+2. Set environment variables (`PORT`, `GEMINI_API_KEY`, `NODE_ENV=production`, `TRUST_PROXY=1`, `ALLOWED_ORIGINS`).
+3. Start the application via `npm start` (`node dist-server/index.js`).
 4. Express serves the static frontend assets and API routes on the single assigned port.
 
 ### Critical Production Header Requirements
