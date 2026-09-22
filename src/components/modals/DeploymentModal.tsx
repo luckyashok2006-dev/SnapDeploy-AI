@@ -24,6 +24,7 @@ import { runPreDeploymentChecks } from '../../features/deployment/build/build-ga
 import { executeDeployment, getProviderInstance } from '../../features/deployment/deployment-coordinator';
 import { DeploymentProviderId } from '../../types/workspace';
 import { EnvironmentVariablesManager } from '../env/EnvironmentVariablesManager';
+import { isProductionEnvironment } from '../../lib/environment';
 
 interface DeploymentModalProps {
   isOpen: boolean;
@@ -60,8 +61,15 @@ export const DeploymentModal: React.FC<DeploymentModalProps> = ({
 
   const project = useProjectStore((s) => s.projects[projectId]);
 
+  // In production, ensure mock provider is never treated as authenticated and reset to netlify
+  useEffect(() => {
+    if (isProductionEnvironment() && selectedProvider === 'mock') {
+      setSelectedProvider('netlify');
+    }
+  }, [selectedProvider, setSelectedProvider]);
+
   const provider = getProviderInstance(selectedProvider);
-  const isAuthenticated = selectedProvider === 'mock' || !!getCredentials(selectedProvider);
+  const isAuthenticated = (!isProductionEnvironment() && selectedProvider === 'mock') || !!getCredentials(selectedProvider);
 
   // Pre-deployment checklist
   const preChecks = isOpen && projectId ? runPreDeploymentChecks(projectId) : null;
@@ -89,6 +97,11 @@ export const DeploymentModal: React.FC<DeploymentModalProps> = ({
 
   // Handle start deploy / redeploy
   const handleStartDeploy = async () => {
+    if (isProductionEnvironment() && selectedProvider === 'mock') {
+      setTokenError('Mock deployment provider is disabled in production. Please configure Netlify.');
+      return;
+    }
+
     try {
       await executeDeployment(projectId, { providerId: selectedProvider });
     } catch {

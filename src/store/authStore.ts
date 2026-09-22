@@ -9,6 +9,7 @@ import {
 import { AuthProvider } from '../features/auth/providers/auth-provider-interface';
 import { MockAuthProvider } from '../features/auth/providers/mock-auth-provider';
 import { SupabaseAuthProvider } from '../features/auth/providers/supabase-auth-provider';
+import { isProductionEnvironment } from '../lib/environment';
 
 // ---------------------------------------------------------------------------
 // Ephemeral Runtime Auth Provider Instances (Memory-Only, Zero Secrets)
@@ -47,15 +48,26 @@ export interface AuthState {
   clearProjectAuth: (projectId: string) => void;
 }
 
+export function sanitizeAuthPersistedState(state: any): void {
+  if (state && isProductionEnvironment() && state.selectedProvider === 'mock') {
+    state.selectedProvider = 'supabase';
+  }
+}
+
 export const useAuthStore = create<AuthState>()(
   persist(
     (set, get) => ({
-      selectedProvider: 'mock',
+      selectedProvider: isProductionEnvironment() ? 'supabase' : 'mock',
       projectAuthConfig: {},
       projectAuthMetadata: {},
       projectUsers: {},
 
-      setSelectedProvider: (providerId) => set({ selectedProvider: providerId }),
+      setSelectedProvider: (providerId) => {
+        if (isProductionEnvironment() && providerId === 'mock') {
+          return;
+        }
+        set({ selectedProvider: providerId });
+      },
 
       setAuthConfig: (projectId, config) => {
         set((state) => ({
@@ -88,11 +100,15 @@ export const useAuthStore = create<AuthState>()(
       },
 
       getProvider: (projectId: string, providerId?: AuthProviderId): AuthProvider => {
-        const targetProviderId =
+        let targetProviderId =
           providerId ||
           get().projectAuthConfig[projectId]?.providerId ||
           get().selectedProvider ||
-          'mock';
+          (isProductionEnvironment() ? 'supabase' : 'mock');
+
+        if (isProductionEnvironment() && targetProviderId === 'mock') {
+          targetProviderId = 'supabase';
+        }
 
         const existing = activeAuthProviders[projectId];
         if (existing && existing.id === targetProviderId) {
@@ -178,7 +194,10 @@ export const useAuthStore = create<AuthState>()(
         projectAuthConfig: state.projectAuthConfig,
         projectAuthMetadata: state.projectAuthMetadata,
         projectUsers: state.projectUsers
-      })
+      }),
+      onRehydrateStorage: () => (state) => {
+        sanitizeAuthPersistedState(state);
+      }
     }
   )
 );

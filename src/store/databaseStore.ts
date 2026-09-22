@@ -10,6 +10,7 @@ import {
 import { DatabaseProvider } from '../features/database/providers/database-provider-interface';
 import { MockDatabaseProvider } from '../features/database/providers/mock-database-provider';
 import { SupabaseProvider } from '../features/database/providers/supabase-provider';
+import { isProductionEnvironment } from '../lib/environment';
 
 // ---------------------------------------------------------------------------
 // Ephemeral Runtime Provider Instances (Memory-Only, Zero Secrets)
@@ -51,16 +52,27 @@ export interface DatabaseState {
   clearProjectDatabase: (projectId: string) => void;
 }
 
+export function sanitizeDatabasePersistedState(state: any): void {
+  if (state && isProductionEnvironment() && state.selectedProvider === 'mock') {
+    state.selectedProvider = 'supabase';
+  }
+}
+
 export const useDatabaseStore = create<DatabaseState>()(
   persist(
     (set, get) => ({
-      selectedProvider: 'mock',
+      selectedProvider: isProductionEnvironment() ? 'supabase' : 'mock',
       projectDatabaseMetadata: {},
       projectSchemas: {},
       projectMigrationHistory: {},
       projectReconciliationStatus: {},
 
-      setSelectedProvider: (providerId) => set({ selectedProvider: providerId }),
+      setSelectedProvider: (providerId) => {
+        if (isProductionEnvironment() && providerId === 'mock') {
+          return;
+        }
+        set({ selectedProvider: providerId });
+      },
 
       setConnectionMetadata: (projectId, metadata) => {
         set((state) => {
@@ -124,7 +136,10 @@ export const useDatabaseStore = create<DatabaseState>()(
       },
 
       getProvider: (projectId, providerId) => {
-        const id = providerId || get().selectedProvider || 'mock';
+        let id = providerId || get().selectedProvider || (isProductionEnvironment() ? 'supabase' : 'mock');
+        if (isProductionEnvironment() && id === 'mock') {
+          id = 'supabase';
+        }
         const key = `${projectId}:${id}`;
         if (!activeProviders[key]) {
           if (id === 'supabase') {
@@ -206,7 +221,10 @@ export const useDatabaseStore = create<DatabaseState>()(
         projectSchemas: state.projectSchemas,
         projectMigrationHistory: state.projectMigrationHistory,
         projectReconciliationStatus: state.projectReconciliationStatus
-      })
+      }),
+      onRehydrateStorage: () => (state) => {
+        sanitizeDatabasePersistedState(state);
+      }
     }
   )
 );

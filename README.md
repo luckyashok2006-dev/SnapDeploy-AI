@@ -43,7 +43,7 @@ Backend Server (Express + Security Middleware)
 
 ## Prerequisites
 
-- **Node.js**: >= 18.18.0 (Node 20 or Node 22 recommended)
+- **Node.js**: >= 20.0.0 (Node 22 or Node 24 LTS recommended)
 - **npm**: >= 9.0.0
 - **Google Gemini API Key**: Obtain from [Google AI Studio](https://aistudio.google.com/app/apikey)
 - **Browser**: Modern Chromium-based browser (Chrome, Edge, Brave) with SharedArrayBuffer support.
@@ -95,17 +95,25 @@ npm run dev
 
 ## Production Build & Start
 
-1. **Build the production frontend bundle**:
+1. **Build the production client and server**:
    ```bash
    npm run build
    ```
-   Compiles TypeScript and bundles production assets into `dist/`.
+   This orchestrates:
+   - `npm run build:client`: Compiles TypeScript and bundles client assets into `dist/`.
+   - `npm run build:server`: Bundles the Express server with esbuild into `dist-server/index.js` and copies server templates.
 
 2. **Start the production server**:
    ```bash
    npm start
    ```
-   Starts the Express server on `PORT` (default 3001). When `dist/` is present, the server serves the production SPA and all `/api/*` endpoints on the same port with required WebContainer security headers (`COOP: same-origin`, `COEP: require-corp`).
+   Starts the compiled Express server using plain Node (`node dist-server/index.js`) on `PORT` (default 3001). No `tsx` or TypeScript runtime compiler is required in production.
+
+   When `dist/` is present, the server serves the production SPA and all `/api/*` endpoints on the same port with required WebContainer isolation headers (`COOP: same-origin`, `COEP: require-corp`).
+
+### Production AI & Mock-Provider Safety Contract
+- **Mock Providers Disabled**: In production (`NODE_ENV=production`), mock deployment, mock auth, and mock database providers are strictly disabled and will throw if invoked. There is **zero** automatic fallback to mock services in production.
+- **Fail-Closed AI Endpoints**: If `GEMINI_API_KEY` is absent or unconfigured in production, all AI generation, repair, and diagnostic endpoints return **HTTP 503** (`GEMINI_PROVIDER_UNAVAILABLE`), and the readiness probe (`/api/health/readiness`) reports **HTTP 503** (`GEMINI_PROVIDER_UNCONFIGURED`). Liveness (`/api/health/liveness`) remains **HTTP 200**.
 
 ---
 

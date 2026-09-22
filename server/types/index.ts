@@ -26,6 +26,7 @@ export interface GenerationInput {
   prompt: string;
   name?: string;
   framework?: ProjectFramework;
+  requestId?: string;
 }
 
 export interface ExecutionEvidence {
@@ -73,6 +74,7 @@ export interface DiagnosticInput {
   evidence: ExecutionEvidence;
   relevantFiles: Record<string, string>;
   userRequirement?: string;
+  requestId?: string;
 }
 
 export interface RepairInput {
@@ -80,6 +82,7 @@ export interface RepairInput {
   evidence: ExecutionEvidence;
   relevantFiles: Record<string, string>;
   originalRequirement?: string;
+  requestId?: string;
 }
 
 export interface EditInput {
@@ -93,6 +96,7 @@ export interface EditInput {
     framework: string;
     fileList: string[];
   };
+  requestId?: string;
 }
 
 export interface AffectedFilePlan {

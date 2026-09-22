@@ -8,6 +8,7 @@ import { NetlifyProvider } from './providers/netlify-provider';
 import { runPreDeploymentChecks, executeBuildGate } from './build/build-gate';
 import { packageDeploymentArtifact } from './packaging/artifact-packager';
 import { sanitizeDeploymentError } from './security/secret-sanitizer';
+import { isProductionEnvironment } from '../../lib/environment';
 
 // Single instances of providers
 const mockProvider = new MockDeploymentProvider();
@@ -62,6 +63,11 @@ export async function executeDeployment(
   let artifactSizeBytes = 0;
 
   try {
+    // Defense-in-depth: independently reject any mock provider invocation in production
+    if (isProductionEnvironment() && (providerId === 'mock' || options?.providerId === 'mock')) {
+      throw new Error('Mock deployment provider is disabled in production. Please select and configure a live deployment provider (e.g., Netlify).');
+    }
+
     // -----------------------------------------------------------------------
     // Stage 1: Pre-Deployment Validation
     // -----------------------------------------------------------------------

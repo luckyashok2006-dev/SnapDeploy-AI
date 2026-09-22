@@ -24,6 +24,7 @@ import {
   AuthUser,
   AuthMetadata
 } from '../../types/auth';
+import { isProductionEnvironment } from '../../lib/environment';
 
 interface AuthManagerProps {
   projectId: string;
@@ -37,7 +38,9 @@ export const AuthManager: React.FC<AuthManagerProps> = ({ projectId }) => {
   const [activeTab, setActiveTab] = useState<'config' | 'users' | 'code'>('config');
 
   // Configuration Form State
-  const [providerId, setProviderId] = useState<AuthProviderId>(config?.providerId || 'mock');
+  const [providerId, setProviderId] = useState<AuthProviderId>(
+    config?.providerId || (isProductionEnvironment() ? 'supabase' : 'mock')
+  );
   const [endpoint, setEndpoint] = useState<string>(
     config?.endpoint || (providerId === 'mock' ? 'http://localhost:3000/api/auth/mock' : 'https://xyz.supabase.co')
   );

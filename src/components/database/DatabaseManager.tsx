@@ -27,6 +27,7 @@ import {
   TableSchema,
   SafeMigrationRequest
 } from '../../types/database';
+import { isProductionEnvironment } from '../../lib/environment';
 
 interface DatabaseManagerProps {
   projectId: string;
@@ -45,7 +46,9 @@ export const DatabaseManager: React.FC<DatabaseManagerProps> = ({ projectId }) =
   const [activeTab, setActiveTab] = useState<'schema' | 'connect' | 'migrations'>('schema');
 
   // Connection Form State
-  const [providerId, setProviderId] = useState<DatabaseProviderId>(metadata?.providerId || 'mock');
+  const [providerId, setProviderId] = useState<DatabaseProviderId>(
+    metadata?.providerId || (isProductionEnvironment() ? 'supabase' : 'mock')
+  );
   const [endpoint, setEndpoint] = useState<string>(
     metadata?.endpoint || (providerId === 'mock' ? 'http://localhost:5432/testdb' : 'https://xyz.supabase.co')
   );

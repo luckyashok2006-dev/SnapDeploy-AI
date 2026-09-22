@@ -12,14 +12,17 @@ import {
   clearRegisteredSecrets
 } from '../features/deployment/security/secret-sanitizer';
 import { useEnvVarStore } from './envVarStore';
+import { isProductionEnvironment } from '../lib/environment';
 
 // ---------------------------------------------------------------------------
 // Ephemeral, memory-only storage (Strictly forbidden from persistence)
 // ---------------------------------------------------------------------------
-const inMemoryCredentials: Record<string, string> = {
-  // Default mock token for instant test/offline use
-  mock: 'mock-test-token'
-};
+const inMemoryCredentials: Record<string, string> = isProductionEnvironment()
+  ? {}
+  : {
+      // Default mock token for instant test/offline use (dev/test only)
+      mock: 'mock-test-token'
+    };
 
 // Map: projectId -> AbortController
 const inFlightAbortControllers: Record<string, AbortController> = {};
@@ -71,17 +74,31 @@ interface DeploymentState {
   cancelActiveDeployment: (projectId: string) => void;
 }
 
+export function sanitizeDeploymentPersistedState(state: any): void {
+  if (state && isProductionEnvironment() && state.selectedProvider === 'mock') {
+    state.selectedProvider = 'netlify';
+  }
+}
+
 export const useDeploymentStore = create<DeploymentState>()(
   persist(
     (set, get) => ({
-      selectedProvider: 'mock', // Default to deterministic mock provider for rock-solid stability
+      selectedProvider: isProductionEnvironment() ? 'netlify' : 'mock',
       deployments: {},
       envVarMetadata: {},
       activeDeployments: {},
 
-      setSelectedProvider: (provider) => set({ selectedProvider: provider }),
+      setSelectedProvider: (provider) => {
+        if (isProductionEnvironment() && provider === 'mock') {
+          return;
+        }
+        set({ selectedProvider: provider });
+      },
 
       setCredentials: (provider, token) => {
+        if (isProductionEnvironment() && provider === 'mock') {
+          return;
+        }
         const trimmed = (token || '').trim();
         if (trimmed) {
           inMemoryCredentials[provider] = trimmed;
@@ -98,6 +115,9 @@ export const useDeploymentStore = create<DeploymentState>()(
       },
 
       getCredentials: (provider) => {
+        if (isProductionEnvironment() && provider === 'mock') {
+          return null;
+        }
         return inMemoryCredentials[provider] || null;
       },
 
@@ -210,7 +230,10 @@ export const useDeploymentStore = create<DeploymentState>()(
         selectedProvider: state.selectedProvider,
         deployments: state.deployments,
         envVarMetadata: state.envVarMetadata
-      })
+      }),
+      onRehydrateStorage: () => (state) => {
+        sanitizeDeploymentPersistedState(state);
+      }
     }
   )
 );

@@ -21,14 +21,23 @@ import {
   EditInput,
   EditProposal
 } from '../types';
+import { logger, sanitizeErrorMessage } from '../logger';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const CANONICAL_LOCK_PATH = path.resolve(__dirname, '../templates/canonical-package-lock.json');
+const CANDIDATE_LOCK_PATHS = [
+  path.resolve(__dirname, '../templates/canonical-package-lock.json'),
+  path.resolve(__dirname, './templates/canonical-package-lock.json'),
+  path.resolve(__dirname, '../server/templates/canonical-package-lock.json'),
+  path.resolve(process.cwd(), 'dist-server/templates/canonical-package-lock.json'),
+  path.resolve(process.cwd(), 'server/templates/canonical-package-lock.json')
+];
+const CANONICAL_LOCK_PATH = CANDIDATE_LOCK_PATHS.find((p) => fs.existsSync(p)) || CANDIDATE_LOCK_PATHS[0];
 let cachedCanonicalLock: string | null = null;
 
 export interface AIExecutionRecord {
   id: string;
+  requestId?: string;
   projectId?: string;
   operation: 'generate' | 'diagnose' | 'repair' | 'edit';
   provider: string;
@@ -57,7 +66,7 @@ export class GeminiAIProvider implements AIProvider {
       try {
         this.ai = new GoogleGenAI({ apiKey: apiKey.trim() });
       } catch (err: any) {
-        console.error('[Gemini Provider] Failed to initialize GoogleGenAI client:', err?.message);
+        logger.error('Failed to initialize GoogleGenAI client', { error: sanitizeErrorMessage(err?.message) });
         this.ai = null;
       }
     }
@@ -113,7 +122,12 @@ export class GeminiAIProvider implements AIProvider {
     }
   }
 
-  public async executeWithRetry<T>(fn: () => Promise<T>, maxRetries = 2, timeoutMs = 90_000): Promise<T> {
+  public async executeWithRetry<T>(
+    fn: () => Promise<T>,
+    maxRetries = 2,
+    timeoutMs = 90_000,
+    context?: { requestId?: string; operation?: string }
+  ): Promise<T> {
     let attempt = 0;
     while (attempt <= maxRetries) {
       try {
@@ -140,7 +154,14 @@ export class GeminiAIProvider implements AIProvider {
 
         if (isTransient && attempt <= maxRetries) {
           const delaySec = Math.min(attempt * 2, 5); // Bounded backoff
-          console.log(`[Gemini Provider] Transient error encountered. Retrying in ${delaySec}s (Attempt ${attempt}/${maxRetries})...`);
+          logger.warn(`Gemini transient error encountered. Retrying in ${delaySec}s (Attempt ${attempt}/${maxRetries})...`, {
+            requestId: context?.requestId,
+            operation: context?.operation,
+            attempt,
+            maxRetries,
+            delaySec,
+            error: sanitizeErrorMessage(err?.message)
+          });
           await new Promise((resolve) => setTimeout(resolve, delaySec * 1000));
         } else {
           throw err;
@@ -232,7 +253,7 @@ CRITICAL REQUIREMENTS:
             required: ['name', 'framework', 'dependencies', 'scripts', 'files']
           }
         }
-      }), 2, 180_000);
+      }), 2, 180_000, { requestId: input.requestId, operation: 'generate' });
 
       const responseText = response.text || '';
       if (!responseText.trim()) {
@@ -481,6 +502,7 @@ npm run build
 
       this.recordExecution({
         id: execId,
+        requestId: input.requestId,
         operation: 'generate',
         provider: this.name,
         model: this.modelName,
@@ -490,19 +512,38 @@ npm run build
         success: true
       });
 
+      logger.info('Gemini project generation completed', {
+        requestId: input.requestId,
+        operation: 'generate',
+        durationMs: Date.now() - startTime,
+        fileCount: Object.keys(filesMap).length
+      });
+
       return { plan, files: filesMap };
     } catch (err: any) {
+      const durationMs = Date.now() - startTime;
+      const sanitizedError = sanitizeErrorMessage(err?.message);
+
       this.recordExecution({
         id: execId,
+        requestId: input.requestId,
         operation: 'generate',
         provider: this.name,
         model: this.modelName,
         startedAt: new Date(startTime).toISOString(),
         completedAt: new Date().toISOString(),
-        durationMs: Date.now() - startTime,
+        durationMs,
         success: false,
-        error: err?.message
+        error: sanitizedError
       });
+
+      logger.error('Gemini project generation failed', {
+        requestId: input.requestId,
+        operation: 'generate',
+        durationMs,
+        error: sanitizedError
+      });
+
       throw err;
     }
   }
@@ -1020,7 +1061,7 @@ ${Object.entries(relevantFiles).map(([path, code]) => `File: ${path}\n\`\`\`tsx\
             required: ['category', 'severity', 'explanation', 'affectedFiles', 'evidence', 'suggestedFix']
           }
         }
-      }));
+      }), 2, 90_000, { requestId: input.requestId, operation: 'diagnose' });
 
       const responseText = response.text || '';
       if (!responseText.trim()) {
@@ -1043,6 +1084,7 @@ ${Object.entries(relevantFiles).map(([path, code]) => `File: ${path}\n\`\`\`tsx\
 
       this.recordExecution({
         id: execId,
+        requestId: input.requestId,
         operation: 'diagnose',
         provider: this.name,
         model: this.modelName,
@@ -1052,19 +1094,38 @@ ${Object.entries(relevantFiles).map(([path, code]) => `File: ${path}\n\`\`\`tsx\
         success: true
       });
 
+      logger.info('Gemini diagnosis completed', {
+        requestId: input.requestId,
+        operation: 'diagnose',
+        category: diagnosis.category,
+        durationMs: Date.now() - startTime
+      });
+
       return diagnosis;
     } catch (err: any) {
+      const durationMs = Date.now() - startTime;
+      const sanitizedError = sanitizeErrorMessage(err?.message);
+
       this.recordExecution({
         id: execId,
+        requestId: input.requestId,
         operation: 'diagnose',
         provider: this.name,
         model: this.modelName,
         startedAt: new Date(startTime).toISOString(),
         completedAt: new Date().toISOString(),
-        durationMs: Date.now() - startTime,
+        durationMs,
         success: false,
-        error: err?.message
+        error: sanitizedError
       });
+
+      logger.error('Gemini diagnosis failed', {
+        requestId: input.requestId,
+        operation: 'diagnose',
+        durationMs,
+        error: sanitizedError
+      });
+
       throw err;
     }
   }
@@ -1124,7 +1185,7 @@ ${Object.entries(relevantFiles).map(([path, code]) => `=== FILE: ${path} ===\n${
             required: ['summary', 'files']
           }
         }
-      }));
+      }), 2, 90_000, { requestId: input.requestId, operation: 'repair' });
 
       const responseText = response.text || '';
       if (!responseText.trim()) {
@@ -1184,6 +1245,7 @@ ${Object.entries(relevantFiles).map(([path, code]) => `=== FILE: ${path} ===\n${
 
       this.recordExecution({
         id: execId,
+        requestId: input.requestId,
         operation: 'repair',
         provider: this.name,
         model: this.modelName,
@@ -1193,19 +1255,38 @@ ${Object.entries(relevantFiles).map(([path, code]) => `=== FILE: ${path} ===\n${
         success: true
       });
 
+      logger.info('Gemini repair patch completed', {
+        requestId: input.requestId,
+        operation: 'repair',
+        modifiedFilesCount: patchFiles.length,
+        durationMs: Date.now() - startTime
+      });
+
       return patch;
     } catch (err: any) {
+      const durationMs = Date.now() - startTime;
+      const sanitizedError = sanitizeErrorMessage(err?.message);
+
       this.recordExecution({
         id: execId,
+        requestId: input.requestId,
         operation: 'repair',
         provider: this.name,
         model: this.modelName,
         startedAt: new Date(startTime).toISOString(),
         completedAt: new Date().toISOString(),
-        durationMs: Date.now() - startTime,
+        durationMs,
         success: false,
-        error: err?.message
+        error: sanitizedError
       });
+
+      logger.error('Gemini repair patch failed', {
+        requestId: input.requestId,
+        operation: 'repair',
+        durationMs,
+        error: sanitizedError
+      });
+
       throw err;
     }
   }
@@ -1310,7 +1391,7 @@ ${projectContextStr}`;
             required: ['summary', 'explanation', 'files']
           }
         }
-      }));
+      }), 2, 90_000, { requestId: input.requestId, operation: 'edit' });
 
       const responseText = response.text || '';
       if (!responseText.trim()) {
@@ -1392,13 +1473,21 @@ ${projectContextStr}`;
           if (existing === undefined) {
             const active = activeFilePath ? (activeFilePath.startsWith('/') ? activeFilePath : '/' + activeFilePath) : null;
             if (active && (relevantFiles[active] !== undefined || relevantFiles[active.replace(/^\/+/, '')] !== undefined)) {
-              console.log(`[GeminiAIProvider] Remapping non-existent modify path '${targetPath}' to active file '${active}'`);
+              logger.info('Remapping non-existent modify path to active file', {
+                requestId: input.requestId,
+                from: targetPath,
+                to: active
+              });
               targetPath = active;
               existing = relevantFiles[targetPath] !== undefined ? relevantFiles[targetPath] : relevantFiles[targetPath.replace(/^\/+/, '')];
             } else if (Object.keys(relevantFiles).length === 1) {
               const onlyKey = Object.keys(relevantFiles)[0];
               const normalizedOnly = onlyKey.startsWith('/') ? onlyKey : '/' + onlyKey;
-              console.log(`[GeminiAIProvider] Remapping non-existent modify path '${targetPath}' to sole baseline file '${normalizedOnly}'`);
+              logger.info('Remapping non-existent modify path to sole baseline file', {
+                requestId: input.requestId,
+                from: targetPath,
+                to: normalizedOnly
+              });
               targetPath = normalizedOnly;
               existing = relevantFiles[onlyKey];
             }
@@ -1461,6 +1550,7 @@ ${projectContextStr}`;
 
       this.recordExecution({
         id: execId,
+        requestId: input.requestId,
         projectId: input.projectId,
         operation: 'edit',
         provider: this.name,
@@ -1471,20 +1561,41 @@ ${projectContextStr}`;
         success: true
       });
 
+      logger.info('Gemini edit proposal completed', {
+        requestId: input.requestId,
+        projectId: input.projectId,
+        operation: 'edit',
+        changedFilesCount: patchFiles.length,
+        durationMs: Date.now() - startTime
+      });
+
       return proposal;
     } catch (err: any) {
+      const durationMs = Date.now() - startTime;
+      const sanitizedError = sanitizeErrorMessage(err?.message);
+
       this.recordExecution({
         id: execId,
+        requestId: input.requestId,
         projectId: input.projectId,
         operation: 'edit',
         provider: this.name,
         model: this.modelName,
         startedAt: new Date(startTime).toISOString(),
         completedAt: new Date().toISOString(),
-        durationMs: Date.now() - startTime,
+        durationMs,
         success: false,
-        error: err?.message
+        error: sanitizedError
       });
+
+      logger.error('Gemini edit proposal failed', {
+        requestId: input.requestId,
+        projectId: input.projectId,
+        operation: 'edit',
+        durationMs,
+        error: sanitizedError
+      });
+
       throw err;
     }
   }

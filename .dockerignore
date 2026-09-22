@@ -1,0 +1,43 @@
+# Dependencies & Package manager artifacts
+node_modules
+.npm
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Git metadata
+.git
+.gitignore
+
+# Build output directories (built fresh inside container)
+dist
+dist-server
+build
+
+# Test suites & reports (excluded from production image)
+tests
+test-results
+playwright-report
+playwright.config.ts
+vitest.config.ts
+
+# Temporary & scratch files
+scratch
+*.tsbuildinfo
+
+# Local environment secrets & files (MUST NOT BE BAKED INTO IMAGE)
+.env
+.env.*
+!.env.example
+
+# IDE & OS files
+.vscode
+.idea
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.DS_Store
+Thumbs.db

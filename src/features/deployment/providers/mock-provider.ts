@@ -5,6 +5,7 @@ import {
   DeploymentStatusResponse,
   ProviderAccountInfo
 } from './provider-interface';
+import { isProductionEnvironment } from '../../../lib/environment';
 
 export type MockFailureMode = 'none' | 'auth' | 'upload' | 'deploy' | 'timeout';
 
@@ -16,12 +17,19 @@ export class MockDeploymentProvider implements DeploymentProvider {
   private static failureMode: MockFailureMode = 'none';
   private static latencyMs = 20;
 
-  private connectedToken: string | null = 'mock-test-token';
-  private accountInfo: ProviderAccountInfo | null = {
-    username: 'snapdeploy-tester',
-    email: 'tester@snapdeploy.local',
-    avatarUrl: 'https://avatars.githubusercontent.com/u/583231?v=4'
-  };
+  private connectedToken: string | null = null;
+  private accountInfo: ProviderAccountInfo | null = null;
+
+  constructor() {
+    if (!isProductionEnvironment()) {
+      this.connectedToken = 'mock-test-token';
+      this.accountInfo = {
+        username: 'snapdeploy-tester',
+        email: 'tester@snapdeploy.local',
+        avatarUrl: 'https://avatars.githubusercontent.com/u/583231?v=4'
+      };
+    }
+  }
 
   public static setFailureMode(mode: MockFailureMode): void {
     MockDeploymentProvider.failureMode = mode;
@@ -32,6 +40,10 @@ export class MockDeploymentProvider implements DeploymentProvider {
   }
 
   public async authenticate(token: string): Promise<ProviderAccountInfo> {
+    if (isProductionEnvironment()) {
+      throw new Error('Mock deployment provider is disabled in production.');
+    }
+
     if (!token || !token.trim()) {
       throw new Error('Authentication failed: token cannot be empty.');
     }
@@ -51,10 +63,16 @@ export class MockDeploymentProvider implements DeploymentProvider {
   }
 
   public isAuthenticated(): boolean {
+    if (isProductionEnvironment()) {
+      return false;
+    }
     return this.connectedToken !== null;
   }
 
   public async getAccountInfo(): Promise<ProviderAccountInfo | null> {
+    if (isProductionEnvironment()) {
+      return null;
+    }
     return this.accountInfo;
   }
 
@@ -64,6 +82,10 @@ export class MockDeploymentProvider implements DeploymentProvider {
   }
 
   public async deploy(request: DeploymentRequest): Promise<DeploymentResult> {
+    if (isProductionEnvironment()) {
+      throw new Error('Mock deployment provider is disabled in production.');
+    }
+
     const startTime = Date.now();
 
     if (!this.isAuthenticated()) {
