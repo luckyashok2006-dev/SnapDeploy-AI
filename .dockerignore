@@ -13,7 +13,7 @@ pnpm-debug.log*
 # Build output directories (built fresh inside container)
 dist
 dist-server
-build
+/build
 
 # Test suites & reports (excluded from production image)
 tests
