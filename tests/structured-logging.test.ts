@@ -204,6 +204,23 @@ describe('Phase 8.1 — Step 12: Structured Logging & Request Correlation', () =
       expect(warnLog).toBeDefined();
       expect(warnLog?.level).toBe('warn');
     });
+
+    it('4. Captures and records Cloudflare CF-Connecting-IP in request completion logs', async () => {
+      const traceId = 'trace-cf-ip-log';
+      const cfIp = '198.51.100.77';
+
+      const res = await fetch(`${baseUrl}/api/health/liveness`, {
+        headers: {
+          'X-Request-Id': traceId,
+          'CF-Connecting-IP': cfIp
+        }
+      });
+      expect(res.status).toBe(200);
+
+      const logEvent = capturedLogs.find((l) => l.requestId === traceId);
+      expect(logEvent).toBeDefined();
+      expect(logEvent?.clientIp).toBe(cfIp);
+    });
   });
 
   // =========================================================================

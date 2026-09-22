@@ -342,4 +342,111 @@ describe('Phase 8.1 — Step 7: Trusted Proxy & Rate Limiter Hardening', () => {
       expect(true).toBe(true);
     });
   });
+
+  // 4. Cloudflare / Render Client IP Extraction & Isolation
+  describe('D. Cloudflare & Render Client-IP Extraction (CF-Connecting-IP)', () => {
+    it('A. Production-style request with valid CF-Connecting-IP value uses that value as client IP', () => {
+      // Mock request simulating Render ingress behind Cloudflare
+      const mockReq: any = {
+        headers: { 'cf-connecting-ip': '198.51.100.42' },
+        ip: '10.26.87.133', // Internal Render load balancer socket address
+        socket: { remoteAddress: '10.26.87.133' }
+      };
+      expect(extractClientIp(mockReq)).toBe('198.51.100.42');
+
+      // Valid IPv6 support
+      const mockIpv6Req: any = {
+        headers: { 'cf-connecting-ip': '2001:db8::8a2e:370:7334' },
+        ip: '10.28.172.168',
+        socket: { remoteAddress: '10.28.172.168' }
+      };
+      expect(extractClientIp(mockIpv6Req)).toBe('2001:db8::8a2e:370:7334');
+    });
+
+    it('B. Local/test requests without CF-Connecting-IP continue using existing Express/socket behavior', () => {
+      const localReq: any = {
+        headers: {},
+        ip: '127.0.0.1',
+        socket: { remoteAddress: '127.0.0.1' }
+      };
+      expect(extractClientIp(localReq)).toBe('127.0.0.1');
+
+      // Without headers property
+      const socketOnlyReq: any = {
+        socket: { remoteAddress: '192.168.1.50' }
+      };
+      expect(extractClientIp(socketOnlyReq)).toBe('192.168.1.50');
+
+      // Untrusted boundary: when trust proxy is explicitly disabled, CF-Connecting-IP is ignored
+      const untrustedReq: any = {
+        app: { get: (key: string) => (key === 'trust proxy' ? false : undefined) },
+        headers: { 'cf-connecting-ip': '8.8.8.8' },
+        ip: '127.0.0.1',
+        socket: { remoteAddress: '127.0.0.1' }
+      };
+      expect(extractClientIp(untrustedReq)).toBe('127.0.0.1');
+
+      // Malformed / non-IP value is rejected and falls back to socket IP
+      const malformedReq: any = {
+        headers: { 'cf-connecting-ip': 'not-an-ip-address; evil' },
+        ip: '10.26.87.133',
+        socket: { remoteAddress: '10.26.87.133' }
+      };
+      expect(extractClientIp(malformedReq)).toBe('10.26.87.133');
+    });
+
+    it('C. Rate limiter treats repeated requests from the same extracted client IP as the same bucket', async () => {
+      vi.spyOn(generationService, 'generate').mockResolvedValue({
+        files: { '/src/App.tsx': 'export default function App() {}' },
+        name: 'test-app',
+        framework: 'react-ts'
+      } as any);
+
+      const clientIp = '198.51.100.99';
+
+      // Simulate 3 requests from the same client IP arriving through rotating Render proxies
+      for (let i = 1; i <= 3; i++) {
+        const res = await fetch(`${baseUrl}/api/generate`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'cf-connecting-ip': clientIp
+          },
+          body: JSON.stringify({ prompt: 'Build an app' })
+        });
+        expect(res.status).toBe(200);
+      }
+
+      expect(rateLimitMap.has(clientIp)).toBe(true);
+      expect(rateLimitMap.get(clientIp)?.count).toBe(3);
+    });
+
+    it('D. Two different extracted client IPs remain isolated in separate rate limit buckets', async () => {
+      vi.spyOn(generationService, 'generate').mockResolvedValue({
+        files: { '/src/App.tsx': 'export default function App() {}' },
+        name: 'test-app',
+        framework: 'react-ts'
+      } as any);
+
+      const ipA = '198.51.100.10';
+      const ipB = '198.51.100.20';
+
+      await fetch(`${baseUrl}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'cf-connecting-ip': ipA },
+        body: JSON.stringify({ prompt: 'Build an app' })
+      });
+
+      await fetch(`${baseUrl}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'cf-connecting-ip': ipB },
+        body: JSON.stringify({ prompt: 'Build an app' })
+      });
+
+      expect(rateLimitMap.has(ipA)).toBe(true);
+      expect(rateLimitMap.get(ipA)?.count).toBe(1);
+      expect(rateLimitMap.has(ipB)).toBe(true);
+      expect(rateLimitMap.get(ipB)?.count).toBe(1);
+    });
+  });
 });

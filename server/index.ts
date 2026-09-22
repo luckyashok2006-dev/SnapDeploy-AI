@@ -15,7 +15,7 @@ import { diagnosticService } from './services/diagnostic-service';
 import { repairService } from './services/repair-service';
 import { editService } from './services/edit-service';
 import { geminiAIProvider } from './providers/GeminiAIProvider';
-import { logger, requestCorrelationMiddleware, sanitizeErrorMessage } from './logger';
+import { logger, requestCorrelationMiddleware, sanitizeErrorMessage, extractClientIp } from './logger';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -346,16 +346,8 @@ export function clearRateLimitMap(): void {
   rateLimitMap.clear();
 }
 
-/**
- * Extracts client IP using Express proxy-trust evaluation.
- * - When behind a trusted proxy, honors the verified upstream client IP.
- * - When untrusted or direct, falls back strictly to the socket remoteAddress.
- * - Normalizes IPv4-mapped IPv6 addresses (::ffff:127.0.0.1 -> 127.0.0.1).
- */
-export function extractClientIp(req: express.Request): string {
-  const ip = req.ip || req.socket?.remoteAddress || '127.0.0.1';
-  return ip.replace(/^::ffff:/, '');
-}
+// Canonical client-IP extraction helper re-exported from logger
+export { extractClientIp };
 
 export function aiRateLimiter(req: express.Request, res: express.Response, next: express.NextFunction): void {
   const clientIp = extractClientIp(req);

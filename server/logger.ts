@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import net from 'net';
 import type { Request, Response, NextFunction } from 'express';
 
 export type LogLevel = 'info' | 'warn' | 'error' | 'debug';
@@ -165,9 +166,45 @@ export class StructuredLogger {
 export const logger = new StructuredLogger();
 
 /**
+ * Canonical Client IP Extraction Helper
+ * 
+ * - When running behind Cloudflare / Render edge proxies where proxy trust is enabled,
+ *   prefers the verified Cloudflare client-IP header ('CF-Connecting-IP') when present and valid.
+ * - When proxy trust is disabled (trust proxy = false) or in direct socket connections without
+ *   the Cloudflare header, strictly falls back to Express proxy-evaluated req.ip or socket remoteAddress.
+ * - Rejects malformed / non-IP values and normalizes IPv4-mapped IPv6 addresses (::ffff:127.0.0.1 -> 127.0.0.1).
+ */
+export function extractClientIp(req: Request | any): string {
+  if (!req) return '127.0.0.1';
+
+  // If proxy trust is explicitly disabled on the app or via environment,
+  // do not trust any proxy-supplied headers; fall back directly to socket remoteAddress.
+  const isTrustProxyDisabled =
+    req.app?.get?.('trust proxy') === false ||
+    (typeof process !== 'undefined' && process.env.TRUST_PROXY?.toLowerCase() === 'false');
+
+  if (!isTrustProxyDisabled) {
+    const rawCfIp =
+      req.headers?.['cf-connecting-ip'] ||
+      (typeof req.get === 'function' ? req.get('cf-connecting-ip') : undefined);
+
+    if (rawCfIp) {
+      const str = Array.isArray(rawCfIp) ? rawCfIp[0] : String(rawCfIp);
+      const candidate = str.split(',')[0].trim();
+      if (candidate && net.isIP(candidate) !== 0) {
+        return candidate.replace(/^::ffff:/, '');
+      }
+    }
+  }
+
+  const rawIp = req.ip || req.socket?.remoteAddress || '127.0.0.1';
+  return typeof rawIp === 'string' ? rawIp.replace(/^::ffff:/, '') : '127.0.0.1';
+}
+
+/**
  * Express middleware for request correlation, monotonic timing, and structured logging.
  * - Assigns or validates X-Request-Id.
- * - Normalizes client IP.
+ * - Normalizes client IP via canonical extractClientIp().
  * - Sets res.locals.requestId and res.setHeader('X-Request-Id', requestId).
  * - Records monotonic start time using process.hrtime.bigint().
  * - Emits structured log event on completion for API routes or error responses.
@@ -181,8 +218,7 @@ export function requestCorrelationMiddleware(
   (req as any).id = requestId;
   (req as any).requestId = requestId;
 
-  const rawIp = req.ip || req.socket?.remoteAddress || '127.0.0.1';
-  const clientIp = rawIp.replace(/^::ffff:/, '');
+  const clientIp = extractClientIp(req);
   (req as any).clientIp = clientIp;
 
   res.locals.requestId = requestId;
