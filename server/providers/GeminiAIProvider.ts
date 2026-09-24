@@ -52,11 +52,95 @@ export interface AIExecutionRecord {
   totalTokens?: number;
 }
 
+export interface RollingLatencyMetrics {
+  sampleCount: number;
+  p50Ms: number;
+  p95Ms: number;
+  p99Ms: number;
+  avgMs: number;
+  maxMs: number;
+}
+
+export class RollingLatencyTracker {
+  private readonly capacity: number;
+  private readonly buffer: number[];
+  private head: number = 0;
+  private count: number = 0;
+
+  constructor(capacity = 100) {
+    this.capacity = capacity;
+    this.buffer = new Array(capacity);
+  }
+
+  public record(durationMs: number): void {
+    if (typeof durationMs !== 'number' || isNaN(durationMs) || durationMs < 0) {
+      return;
+    }
+    this.buffer[this.head] = Math.round(durationMs * 100) / 100;
+    this.head = (this.head + 1) % this.capacity;
+    if (this.count < this.capacity) {
+      this.count++;
+    }
+  }
+
+  public getSamples(): number[] {
+    const samples: number[] = [];
+    if (this.count < this.capacity) {
+      for (let i = 0; i < this.count; i++) {
+        samples.push(this.buffer[i]);
+      }
+    } else {
+      for (let i = 0; i < this.capacity; i++) {
+        const idx = (this.head + i) % this.capacity;
+        samples.push(this.buffer[idx]);
+      }
+    }
+    return samples;
+  }
+
+  public getMetrics(): RollingLatencyMetrics {
+    const count = this.count;
+    if (count === 0) {
+      return {
+        sampleCount: 0,
+        p50Ms: 0,
+        p95Ms: 0,
+        p99Ms: 0,
+        avgMs: 0,
+        maxMs: 0
+      };
+    }
+
+    const sorted = this.getSamples().sort((a, b) => a - b);
+    const sum = sorted.reduce((acc, val) => acc + val, 0);
+
+    const getPercentile = (p: number): number => {
+      const idx = Math.max(0, Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1));
+      return sorted[idx];
+    };
+
+    return {
+      sampleCount: count,
+      p50Ms: getPercentile(50),
+      p95Ms: getPercentile(95),
+      p99Ms: getPercentile(99),
+      avgMs: Math.round((sum / count) * 100) / 100,
+      maxMs: sorted[sorted.length - 1]
+    };
+  }
+
+  public clear(): void {
+    this.head = 0;
+    this.count = 0;
+  }
+}
+
 export class GeminiAIProvider implements AIProvider {
   public readonly name = 'gemini';
   private ai: GoogleGenAI | null = null;
   private modelName: string = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
   private executionHistory: AIExecutionRecord[] = [];
+  private latencyTracker: RollingLatencyTracker = new RollingLatencyTracker(100);
 
   constructor() {
     this.modelName = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
@@ -1653,6 +1737,15 @@ ${projectContextStr}`;
     if (this.executionHistory.length > 50) {
       this.executionHistory.shift();
     }
+    this.latencyTracker.record(record.durationMs);
+  }
+
+  public getLatencyMetrics(): RollingLatencyMetrics {
+    return this.latencyTracker.getMetrics();
+  }
+
+  public clearLatencyMetricsForTesting(): void {
+    this.latencyTracker.clear();
   }
 }
 

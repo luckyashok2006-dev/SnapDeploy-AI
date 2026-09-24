@@ -390,6 +390,133 @@ export function aiRateLimiter(req: express.Request, res: express.Response, next:
   next();
 }
 
+/**
+ * Phase 8.2.7 — Global Daily AI Request Circuit Breaker
+ * 
+ * Provides an in-memory, process-local ceiling on total AI invocations per UTC day.
+ * - Single-instance / process-local protection to guard against runaway automation or sudden cost spikes.
+ * - Does not replace per-IP rate limiting (30 req/min) or provide a distributed billing guarantee.
+ * - Evaluated strictly after input validation passes and an AI operation is about to be invoked.
+ * - Resets at 00:00:00 UTC every calendar day or upon process restart.
+ */
+export const DEFAULT_DAILY_AI_REQUEST_LIMIT = 1000;
+
+export function getUtcDayString(date = new Date()): string {
+  return date.toISOString().slice(0, 10);
+}
+
+export function getNextUtcMidnight(date = new Date()): number {
+  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + 1, 0, 0, 0, 0);
+}
+
+export function resolveDailyAiRequestLimit(): number {
+  const envVal = process.env.DAILY_AI_REQUEST_LIMIT;
+  if (envVal && /^\d+$/.test(envVal.trim())) {
+    const parsed = parseInt(envVal.trim(), 10);
+    if (parsed > 0) return parsed;
+  }
+  return DEFAULT_DAILY_AI_REQUEST_LIMIT;
+}
+
+let dailyAiQuotaState = {
+  dateUtc: getUtcDayString(),
+  count: 0,
+  overrideLimit: null as number | null
+};
+
+export function getDailyAiQuotaState(): {
+  date: string;
+  count: number;
+  limit: number;
+  remaining: number;
+  resetTime: number;
+} {
+  const now = new Date();
+  const todayUtc = getUtcDayString(now);
+
+  if (dailyAiQuotaState.dateUtc !== todayUtc) {
+    dailyAiQuotaState.dateUtc = todayUtc;
+    dailyAiQuotaState.count = 0;
+  }
+
+  const limit = dailyAiQuotaState.overrideLimit ?? resolveDailyAiRequestLimit();
+  const resetTime = getNextUtcMidnight(now);
+
+  return {
+    date: dailyAiQuotaState.dateUtc,
+    count: dailyAiQuotaState.count,
+    limit,
+    remaining: Math.max(0, limit - dailyAiQuotaState.count),
+    resetTime
+  };
+}
+
+export function resetDailyAiQuotaForTesting(
+  newCount = 0,
+  newDate?: string,
+  newLimit?: number | null
+): void {
+  dailyAiQuotaState.dateUtc = newDate || getUtcDayString();
+  dailyAiQuotaState.count = Math.max(0, newCount);
+  if (newLimit !== undefined) {
+    dailyAiQuotaState.overrideLimit = newLimit;
+  }
+}
+
+export function setDailyAiQuotaLimitForTesting(limit: number | null): void {
+  dailyAiQuotaState.overrideLimit = limit;
+}
+
+export function checkAndIncrementDailyQuota(
+  req: express.Request,
+  res: express.Response
+): boolean {
+  const now = new Date();
+  const todayUtc = getUtcDayString(now);
+
+  if (dailyAiQuotaState.dateUtc !== todayUtc) {
+    dailyAiQuotaState.dateUtc = todayUtc;
+    dailyAiQuotaState.count = 0;
+  }
+
+  const limit = dailyAiQuotaState.overrideLimit ?? resolveDailyAiRequestLimit();
+  const nextMidnight = getNextUtcMidnight(now);
+  const nowMs = now.getTime();
+  const retryAfterSec = Math.max(1, Math.ceil((nextMidnight - nowMs) / 1000));
+  const resetEpochSec = Math.floor(nextMidnight / 1000);
+
+  if (dailyAiQuotaState.count >= limit) {
+    const requestId = (req as any)?.id || res?.locals?.requestId || (req as any)?.requestId;
+    const clientIp = extractClientIp(req);
+
+    logger.warn('Global daily AI request limit reached', {
+      requestId,
+      clientIp,
+      dailyCount: dailyAiQuotaState.count,
+      limit,
+      retryAfterSec,
+      resetTime: new Date(nextMidnight).toISOString()
+    });
+
+    res.setHeader('Retry-After', retryAfterSec);
+    res.setHeader('X-RateLimit-Limit-Daily', limit);
+    res.setHeader('X-RateLimit-Remaining-Daily', 0);
+    res.setHeader('X-RateLimit-Reset-Daily', resetEpochSec);
+
+    res.status(429).json({
+      code: 'DAILY_QUOTA_EXCEEDED',
+      error: `Daily global AI request quota of ${limit} exceeded. Resets at 00:00 UTC (in ${retryAfterSec} seconds).`
+    });
+    return false;
+  }
+
+  dailyAiQuotaState.count++;
+  res.setHeader('X-RateLimit-Limit-Daily', limit);
+  res.setHeader('X-RateLimit-Remaining-Daily', Math.max(0, limit - dailyAiQuotaState.count));
+  res.setHeader('X-RateLimit-Reset-Daily', resetEpochSec);
+  return true;
+}
+
 export { sanitizeErrorMessage, logger };
 
 // 4. Graceful Shutdown State & Request Drain Guard
@@ -556,11 +683,21 @@ app.get('/api/health', (req, res) => {
  * Informational endpoint exposing active AI model, provider state, and execution history statistics.
  */
 app.get('/api/ai/status', (req, res) => {
+  const quota = getDailyAiQuotaState();
+  const latency = geminiAIProvider.getLatencyMetrics();
+
   res.json({
     provider: geminiAIProvider.name,
     model: geminiAIProvider.getModelName(),
     configured: geminiAIProvider.isConfigured(),
-    recentExecutionsCount: geminiAIProvider.getExecutionHistory().length
+    recentExecutionsCount: geminiAIProvider.getExecutionHistory().length,
+    latency,
+    dailyQuota: {
+      used: quota.count,
+      limit: quota.limit,
+      remaining: quota.remaining,
+      resetsAtUtc: new Date(quota.resetTime).toISOString()
+    }
   });
 });
 
@@ -582,6 +719,10 @@ app.post('/api/generate', aiRateLimiter, async (req, res) => {
 
     if (name && (typeof name !== 'string' || name.length > 100)) {
       res.status(400).json({ code: 'INVALID_NAME', error: 'Project name must be a string under 100 characters.' });
+      return;
+    }
+
+    if (!checkAndIncrementDailyQuota(req, res)) {
       return;
     }
 
@@ -636,6 +777,10 @@ app.post('/api/diagnose', aiRateLimiter, async (req, res) => {
       }
     }
 
+    if (!checkAndIncrementDailyQuota(req, res)) {
+      return;
+    }
+
     logger.info('Received diagnostic request', {
       requestId,
       fileCount: fileEntries.length,
@@ -684,6 +829,10 @@ app.post('/api/repair', aiRateLimiter, async (req, res) => {
         res.status(400).json({ code: 'FILE_TOO_LARGE', error: `File content for '${path}' exceeds 500KB limit.` });
         return;
       }
+    }
+
+    if (!checkAndIncrementDailyQuota(req, res)) {
+      return;
     }
 
     logger.info('Received repair request', {
@@ -741,6 +890,10 @@ app.post('/api/edit', aiRateLimiter, async (req, res) => {
       }
     }
 
+    if (!checkAndIncrementDailyQuota(req, res)) {
+      return;
+    }
+
     logger.info('Received edit request', {
       requestId,
       projectId,
@@ -791,6 +944,10 @@ app.post('/api/screenshot/analyze', aiRateLimiter, async (req, res) => {
 
     if (image.data.length > 15_000_000) {
       res.status(400).json({ code: 'IMAGE_TOO_LARGE', error: 'Image data exceeds 10MB limit.' });
+      return;
+    }
+
+    if (!checkAndIncrementDailyQuota(req, res)) {
       return;
     }
 
