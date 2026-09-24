@@ -47,6 +47,9 @@ export interface AIExecutionRecord {
   durationMs: number;
   success: boolean;
   error?: string;
+  promptTokens?: number;
+  candidatesTokens?: number;
+  totalTokens?: number;
 }
 
 export class GeminiAIProvider implements AIProvider {
@@ -212,6 +215,7 @@ CRITICAL REQUIREMENTS:
         contents: `User Prompt: ${promptText}\nProject Framework: ${input.framework || 'vite-react'}\nSuggested Name: ${input.name || 'web-app'}`,
         config: {
           systemInstruction,
+          maxOutputTokens: 8192,
           responseMimeType: 'application/json',
           responseSchema: {
             type: 'object',
@@ -255,6 +259,7 @@ CRITICAL REQUIREMENTS:
         }
       }), 2, 180_000, { requestId: input.requestId, operation: 'generate' });
 
+      const usageMetadata = this.extractUsageMetadata(response);
       const responseText = response.text || '';
       if (!responseText.trim()) {
         throw new Error('Gemini returned an empty generation response');
@@ -509,14 +514,16 @@ npm run build
         startedAt: new Date(startTime).toISOString(),
         completedAt: new Date().toISOString(),
         durationMs: Date.now() - startTime,
-        success: true
+        success: true,
+        ...usageMetadata
       });
 
       logger.info('Gemini project generation completed', {
         requestId: input.requestId,
         operation: 'generate',
         durationMs: Date.now() - startTime,
-        fileCount: Object.keys(filesMap).length
+        fileCount: Object.keys(filesMap).length,
+        ...usageMetadata
       });
 
       return { plan, files: filesMap };
@@ -1003,6 +1010,10 @@ npm run build
     return sanitized;
   }
 
+  public async diagnoseError(input: DiagnosticInput): Promise<Diagnosis> {
+    return this.diagnoseFailure(input);
+  }
+
   public async diagnoseFailure(input: DiagnosticInput): Promise<Diagnosis> {
     const client = this.ensureClient();
     const startTime = Date.now();
@@ -1034,6 +1045,7 @@ ${Object.entries(relevantFiles).map(([path, code]) => `File: ${path}\n\`\`\`tsx\
         contents: prompt,
         config: {
           systemInstruction,
+          maxOutputTokens: 8192,
           responseMimeType: 'application/json',
           responseSchema: {
             type: 'object',
@@ -1063,6 +1075,7 @@ ${Object.entries(relevantFiles).map(([path, code]) => `File: ${path}\n\`\`\`tsx\
         }
       }), 2, 90_000, { requestId: input.requestId, operation: 'diagnose' });
 
+      const usageMetadata = this.extractUsageMetadata(response);
       const responseText = response.text || '';
       if (!responseText.trim()) {
         throw new Error('Gemini returned an empty diagnosis response');
@@ -1091,14 +1104,16 @@ ${Object.entries(relevantFiles).map(([path, code]) => `File: ${path}\n\`\`\`tsx\
         startedAt: new Date(startTime).toISOString(),
         completedAt: new Date().toISOString(),
         durationMs: Date.now() - startTime,
-        success: true
+        success: true,
+        ...usageMetadata
       });
 
       logger.info('Gemini diagnosis completed', {
         requestId: input.requestId,
         operation: 'diagnose',
         category: diagnosis.category,
-        durationMs: Date.now() - startTime
+        durationMs: Date.now() - startTime,
+        ...usageMetadata
       });
 
       return diagnosis;
@@ -1128,6 +1143,10 @@ ${Object.entries(relevantFiles).map(([path, code]) => `File: ${path}\n\`\`\`tsx\
 
       throw err;
     }
+  }
+
+  public async generateRepairPatch(input: RepairInput): Promise<Patch> {
+    return this.generatePatch(input);
   }
 
   public async generatePatch(input: RepairInput): Promise<Patch> {
@@ -1164,6 +1183,7 @@ ${Object.entries(relevantFiles).map(([path, code]) => `=== FILE: ${path} ===\n${
         contents: prompt,
         config: {
           systemInstruction,
+          maxOutputTokens: 8192,
           responseMimeType: 'application/json',
           responseSchema: {
             type: 'object',
@@ -1187,6 +1207,7 @@ ${Object.entries(relevantFiles).map(([path, code]) => `=== FILE: ${path} ===\n${
         }
       }), 2, 90_000, { requestId: input.requestId, operation: 'repair' });
 
+      const usageMetadata = this.extractUsageMetadata(response);
       const responseText = response.text || '';
       if (!responseText.trim()) {
         throw new Error('Gemini returned an empty patch response');
@@ -1252,14 +1273,16 @@ ${Object.entries(relevantFiles).map(([path, code]) => `=== FILE: ${path} ===\n${
         startedAt: new Date(startTime).toISOString(),
         completedAt: new Date().toISOString(),
         durationMs: Date.now() - startTime,
-        success: true
+        success: true,
+        ...usageMetadata
       });
 
       logger.info('Gemini repair patch completed', {
         requestId: input.requestId,
         operation: 'repair',
         modifiedFilesCount: patchFiles.length,
-        durationMs: Date.now() - startTime
+        durationMs: Date.now() - startTime,
+        ...usageMetadata
       });
 
       return patch;
@@ -1289,6 +1312,10 @@ ${Object.entries(relevantFiles).map(([path, code]) => `=== FILE: ${path} ===\n${
 
       throw err;
     }
+  }
+
+  public async proposeEdit(input: EditInput): Promise<EditProposal> {
+    return this.editProject(input);
   }
 
   public async editProject(input: EditInput): Promise<EditProposal> {
@@ -1336,6 +1363,7 @@ ${projectContextStr}`;
         contents,
         config: {
           systemInstruction,
+          maxOutputTokens: 8192,
           responseMimeType: 'application/json',
           responseSchema: {
             type: 'object',
@@ -1393,6 +1421,7 @@ ${projectContextStr}`;
         }
       }), 2, 90_000, { requestId: input.requestId, operation: 'edit' });
 
+      const usageMetadata = this.extractUsageMetadata(response);
       const responseText = response.text || '';
       if (!responseText.trim()) {
         throw new Error('Gemini returned an empty edit response');
@@ -1558,7 +1587,8 @@ ${projectContextStr}`;
         startedAt: new Date(startTime).toISOString(),
         completedAt: new Date().toISOString(),
         durationMs: Date.now() - startTime,
-        success: true
+        success: true,
+        ...usageMetadata
       });
 
       logger.info('Gemini edit proposal completed', {
@@ -1566,7 +1596,8 @@ ${projectContextStr}`;
         projectId: input.projectId,
         operation: 'edit',
         changedFilesCount: patchFiles.length,
-        durationMs: Date.now() - startTime
+        durationMs: Date.now() - startTime,
+        ...usageMetadata
       });
 
       return proposal;
@@ -1598,6 +1629,23 @@ ${projectContextStr}`;
 
       throw err;
     }
+  }
+
+  private extractUsageMetadata(response: any): {
+    promptTokens?: number;
+    candidatesTokens?: number;
+    totalTokens?: number;
+  } {
+    const usage = response?.usageMetadata;
+    const promptTokens = usage?.promptTokenCount ?? usage?.promptTokens;
+    const candidatesTokens = usage?.candidatesTokenCount ?? usage?.candidatesTokens;
+    const totalTokens = usage?.totalTokenCount ?? usage?.totalTokens;
+
+    return {
+      ...(typeof promptTokens === 'number' ? { promptTokens } : {}),
+      ...(typeof candidatesTokens === 'number' ? { candidatesTokens } : {}),
+      ...(typeof totalTokens === 'number' ? { totalTokens } : {})
+    };
   }
 
   private recordExecution(record: AIExecutionRecord) {

@@ -16,6 +16,11 @@ export interface StructuredLogEvent {
   clientIp?: string;
   errorCode?: string;
   error?: string;
+  promptTokens?: number;
+  candidatesTokens?: number;
+  totalTokens?: number;
+  isColdStart?: boolean;
+  bootDurationMs?: number;
   [key: string]: any;
 }
 
@@ -50,7 +55,8 @@ export function sanitizeLogObject<T>(obj: T): T {
   if (obj !== null && typeof obj === 'object') {
     const result: Record<string, any> = {};
     for (const [k, v] of Object.entries(obj)) {
-      if (/(password|passwd|secret|token|api[-_]?key|authorization|cookie|session|credentials)/i.test(k)) {
+      const isTokenTelemetry = typeof v === 'number' && /(promptTokens|candidatesTokens|totalTokens)/i.test(k);
+      if (!isTokenTelemetry && /(password|passwd|secret|token|api[-_]?key|authorization|cookie|session|credentials)/i.test(k)) {
         result[k] = '[REDACTED]';
       } else {
         result[k] = sanitizeLogObject(v);
@@ -201,6 +207,21 @@ export function extractClientIp(req: Request | any): string {
   return typeof rawIp === 'string' ? rawIp.replace(/^::ffff:/, '') : '127.0.0.1';
 }
 
+const SERVER_BOOT_TIME = Date.now();
+let isFirstHandledRequest = true;
+
+export function getServerBootTime(): number {
+  return SERVER_BOOT_TIME;
+}
+
+export function isColdStartPending(): boolean {
+  return isFirstHandledRequest;
+}
+
+export function resetColdStartForTesting(): void {
+  isFirstHandledRequest = true;
+}
+
 /**
  * Express middleware for request correlation, monotonic timing, and structured logging.
  * - Assigns or validates X-Request-Id.
@@ -214,6 +235,13 @@ export function requestCorrelationMiddleware(
   res: Response,
   next: NextFunction
 ): void {
+  const isColdStart = isFirstHandledRequest;
+  let bootDurationMs: number | undefined;
+  if (isFirstHandledRequest) {
+    isFirstHandledRequest = false;
+    bootDurationMs = Math.max(0, Date.now() - SERVER_BOOT_TIME);
+  }
+
   const requestId = resolveRequestId(req.headers['x-request-id']);
   (req as any).id = requestId;
   (req as any).requestId = requestId;
@@ -233,18 +261,25 @@ export function requestCorrelationMiddleware(
     const isApiRoute = req.path.startsWith('/api');
     const isError = res.statusCode >= 400;
 
-    if (isApiRoute || isError) {
+    if (isApiRoute || isError || isColdStart) {
       const level: LogLevel =
         res.statusCode >= 500 ? 'error' : res.statusCode >= 400 ? 'warn' : 'info';
 
-      logger.log(level, `HTTP ${req.method} ${req.path} completed with ${res.statusCode}`, {
+      const logContext: Record<string, any> = {
         requestId,
         method: req.method,
         path: req.path,
         statusCode: res.statusCode,
         durationMs,
         clientIp
-      });
+      };
+
+      if (isColdStart) {
+        logContext.isColdStart = true;
+        logContext.bootDurationMs = bootDurationMs ?? Math.max(0, Date.now() - SERVER_BOOT_TIME);
+      }
+
+      logger.log(level, `HTTP ${req.method} ${req.path} completed with ${res.statusCode}`, logContext);
     }
   });
 

@@ -7,7 +7,10 @@ import {
   resolveRequestId,
   sanitizeErrorMessage,
   sanitizeLogObject,
-  StructuredLogEvent
+  StructuredLogEvent,
+  resetColdStartForTesting,
+  isColdStartPending,
+  getServerBootTime
 } from '../server/logger';
 import { geminiAIProvider } from '../server/providers/GeminiAIProvider';
 
@@ -356,6 +359,277 @@ describe('Phase 8.1 — Step 12: Structured Logging & Request Correlation', () =
       expect(recorded?.success).toBe(true);
 
       generateSpy.mockRestore();
+    });
+  });
+
+  // =========================================================================
+  // 6. Cold-Start Tracking & Boot Latency (Phase 8.2.7)
+  // =========================================================================
+  describe('F. Container Boot Tracking & Cold-Start Indicator', () => {
+    it('1. Marks the first handled request as a cold start with bootDurationMs >= 0', async () => {
+      resetColdStartForTesting();
+      expect(isColdStartPending()).toBe(true);
+
+      const coldTraceId = 'cold-start-req-1';
+      const res1 = await fetch(`${baseUrl}/api/health/liveness`, {
+        headers: { 'X-Request-Id': coldTraceId }
+      });
+      expect(res1.status).toBe(200);
+
+      const coldLog = capturedLogs.find((l) => l.requestId === coldTraceId);
+      expect(coldLog).toBeDefined();
+      expect(coldLog?.isColdStart).toBe(true);
+      expect(typeof coldLog?.bootDurationMs).toBe('number');
+      expect(coldLog?.bootDurationMs).toBeGreaterThanOrEqual(0);
+      expect(isColdStartPending()).toBe(false);
+    });
+
+    it('2. Does not mark subsequent requests as cold starts', async () => {
+      // Ensure cold start was already consumed by previous request
+      expect(isColdStartPending()).toBe(false);
+
+      const warmTraceId = 'warm-request-2';
+      const res2 = await fetch(`${baseUrl}/api/health/liveness`, {
+        headers: { 'X-Request-Id': warmTraceId }
+      });
+      expect(res2.status).toBe(200);
+
+      const warmLog = capturedLogs.find((l) => l.requestId === warmTraceId);
+      expect(warmLog).toBeDefined();
+      expect(warmLog?.isColdStart).toBeUndefined();
+      expect(warmLog?.bootDurationMs).toBeUndefined();
+    });
+
+    it('3. Preserves server boot timestamp across requests', () => {
+      const bootTime = getServerBootTime();
+      expect(typeof bootTime).toBe('number');
+      expect(bootTime).toBeGreaterThan(0);
+      expect(bootTime).toBeLessThanOrEqual(Date.now());
+    });
+  });
+
+  // =========================================================================
+  // 7. Gemini Usage Telemetry & Cost Controls (Phase 8.2.7)
+  // =========================================================================
+  describe('G. Gemini Token Usage Telemetry & Output Caps', () => {
+    let originalClient: any;
+
+    beforeEach(() => {
+      originalClient = (geminiAIProvider as any).ai;
+    });
+
+    afterAll(() => {
+      (geminiAIProvider as any).ai = originalClient;
+    });
+
+    it('1. Records token usage metadata in AIExecutionRecord and completion logs', async () => {
+      const traceId = 'trace-telemetry-123';
+      const promptText = 'Create a customer dashboard with analytics';
+
+      const mockGenerateContent = vi.fn().mockResolvedValue({
+        text: JSON.stringify({
+          name: 'telemetry-app',
+          framework: 'vite-react',
+          dependencies: [],
+          scripts: { dev: 'vite', build: 'vite build' },
+          files: [
+            {
+              path: '/src/main.tsx',
+              purpose: 'Entry point',
+              content: "import React from 'react';\nimport App from './App';\nexport default App;"
+            },
+            {
+              path: '/src/App.tsx',
+              purpose: 'Main App',
+              content: 'export default function App() { return <div>DashboardContent</div>; }'
+            }
+          ]
+        }),
+        usageMetadata: {
+          promptTokenCount: 123,
+          candidatesTokenCount: 456,
+          totalTokenCount: 579
+        }
+      });
+
+      (geminiAIProvider as any).ai = {
+        models: { generateContent: mockGenerateContent }
+      };
+
+      const result = await geminiAIProvider.generateProject({
+        prompt: promptText,
+        name: 'telemetry-app',
+        requestId: traceId
+      });
+
+      expect(result.plan.name).toBe('telemetry-app');
+
+      // Verify AIExecutionRecord stores token usage
+      const history = geminiAIProvider.getExecutionHistory();
+      const record = history.find((h) => h.requestId === traceId);
+      expect(record).toBeDefined();
+      expect(record?.promptTokens).toBe(123);
+      expect(record?.candidatesTokens).toBe(456);
+      expect(record?.totalTokens).toBe(579);
+
+      // Verify structured completion log contains token usage
+      const completionLog = capturedLogs.find(
+        (l) => l.requestId === traceId && l.message === 'Gemini project generation completed'
+      );
+      expect(completionLog).toBeDefined();
+      expect(completionLog?.promptTokens).toBe(123);
+      expect(completionLog?.candidatesTokens).toBe(456);
+      expect(completionLog?.totalTokens).toBe(579);
+
+      // Verify prompt and source code bodies are NOT leaked into logs
+      const allRelatedLogs = capturedLogs.filter((l) => l.requestId === traceId);
+      expect(allRelatedLogs.length).toBeGreaterThan(0);
+      for (const log of allRelatedLogs) {
+        const serialized = JSON.stringify(log);
+        expect(serialized).not.toContain(promptText);
+        expect(serialized).not.toContain('DashboardContent');
+      }
+    });
+
+    it('2. Enforces maxOutputTokens: 8192 across all four Gemini generation paths', async () => {
+      const mockGenerateContent = vi.fn();
+      (geminiAIProvider as any).ai = {
+        models: { generateContent: mockGenerateContent }
+      };
+
+      // Path 1: generateProject
+      mockGenerateContent.mockResolvedValueOnce({
+        text: JSON.stringify({
+          name: 'cap-app',
+          framework: 'vite-react',
+          dependencies: [],
+          scripts: { dev: 'vite', build: 'vite build' },
+          files: [
+            { path: '/src/main.tsx', purpose: 'Entry', content: "import App from './App'; export default App;" },
+            { path: '/src/App.tsx', purpose: 'App', content: 'export default function App() {}' }
+          ]
+        }),
+        usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 20, totalTokenCount: 30 }
+      });
+      await geminiAIProvider.generateProject({ prompt: 'test project', requestId: 'trace-cap-1' });
+      expect(mockGenerateContent.mock.calls[0][0].config.maxOutputTokens).toBe(8192);
+
+      // Path 2: diagnoseError
+      mockGenerateContent.mockResolvedValueOnce({
+        text: JSON.stringify({
+          category: 'syntax',
+          severity: 'high',
+          explanation: 'Syntax error detected',
+          affectedFiles: ['/src/App.tsx'],
+          evidence: ['Unexpected token'],
+          suggestedFix: 'Fix syntax error'
+        }),
+        usageMetadata: { promptTokenCount: 15, candidatesTokenCount: 25, totalTokenCount: 40 }
+      });
+      await geminiAIProvider.diagnoseError({
+        evidence: {
+          executionId: 'e-1',
+          command: 'npm',
+          args: ['run', 'build'],
+          exitCode: 1,
+          stdout: '',
+          stderr: 'SyntaxError',
+          durationMs: 50
+        },
+        relevantFiles: { '/src/App.tsx': 'const a =' },
+        requestId: 'trace-cap-2'
+      });
+      expect(mockGenerateContent.mock.calls[1][0].config.maxOutputTokens).toBe(8192);
+
+      // Path 3: generateRepairPatch
+      mockGenerateContent.mockResolvedValueOnce({
+        text: JSON.stringify({
+          summary: 'Fix syntax error',
+          confidence: 0.95,
+          files: [{ path: '/src/App.tsx', after: 'const a = 1;' }]
+        }),
+        usageMetadata: { promptTokenCount: 20, candidatesTokenCount: 30, totalTokenCount: 50 }
+      });
+      await geminiAIProvider.generateRepairPatch({
+        diagnosis: {
+          category: 'syntax',
+          severity: 'high',
+          explanation: 'Syntax error',
+          affectedFiles: ['/src/App.tsx'],
+          evidence: ['Unexpected token'],
+          suggestedFix: 'Fix it'
+        },
+        evidence: {
+          executionId: 'e-1',
+          command: 'npm',
+          args: ['run', 'build'],
+          exitCode: 1,
+          stdout: '',
+          stderr: 'SyntaxError',
+          durationMs: 50
+        },
+        relevantFiles: { '/src/App.tsx': 'const a =' },
+        requestId: 'trace-cap-3'
+      });
+      expect(mockGenerateContent.mock.calls[2][0].config.maxOutputTokens).toBe(8192);
+
+      // Path 4: proposeEdit
+      mockGenerateContent.mockResolvedValueOnce({
+        text: JSON.stringify({
+          summary: 'Add feature',
+          explanation: 'Added feature to App',
+          files: [{ path: '/src/App.tsx', action: 'modify', after: 'export default function App() { return 1; }' }]
+        }),
+        usageMetadata: { promptTokenCount: 25, candidatesTokenCount: 35, totalTokenCount: 60 }
+      });
+      await geminiAIProvider.proposeEdit({
+        prompt: 'Add feature',
+        relevantFiles: { '/src/App.tsx': 'export default function App() {}' },
+        requestId: 'trace-cap-4'
+      });
+      expect(mockGenerateContent.mock.calls[3][0].config.maxOutputTokens).toBe(8192);
+    });
+
+    it('3. Gracefully handles responses without usageMetadata (backward compatibility)', async () => {
+      const traceId = 'trace-compat-legacy';
+
+      const mockGenerateContent = vi.fn().mockResolvedValue({
+        text: JSON.stringify({
+          name: 'compat-app',
+          framework: 'vite-react',
+          dependencies: [],
+          scripts: { dev: 'vite', build: 'vite build' },
+          files: [
+            { path: '/src/main.tsx', purpose: 'Entry', content: "import App from './App'; export default App;" },
+            { path: '/src/App.tsx', purpose: 'App', content: 'export default function App() {}' }
+          ]
+        })
+        // usageMetadata is intentionally omitted
+      });
+
+      (geminiAIProvider as any).ai = {
+        models: { generateContent: mockGenerateContent }
+      };
+
+      const result = await geminiAIProvider.generateProject({
+        prompt: 'build app without usage metadata',
+        requestId: traceId
+      });
+
+      expect(result.plan.name).toBe('compat-app');
+
+      const history = geminiAIProvider.getExecutionHistory();
+      const record = history.find((h) => h.requestId === traceId);
+      expect(record).toBeDefined();
+      expect(record?.promptTokens).toBeUndefined();
+      expect(record?.candidatesTokens).toBeUndefined();
+      expect(record?.totalTokens).toBeUndefined();
+
+      const completionLog = capturedLogs.find(
+        (l) => l.requestId === traceId && l.message === 'Gemini project generation completed'
+      );
+      expect(completionLog).toBeDefined();
+      expect(completionLog?.promptTokens).toBeUndefined();
     });
   });
 });
