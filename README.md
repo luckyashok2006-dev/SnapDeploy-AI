@@ -38,6 +38,13 @@ Backend Server (Express + Security Middleware)
    - Path traversal prevention, UNC/network path blocking, and null-byte rejection.
    - Comprehensive error sanitization (paths and tokens masked).
    - Truthful ZIP export excluding `.env`, `node_modules`, `dist`, and `.git`.
+7. **Observability & Cost Protection**:
+   - Structured JSON logging with request correlation (`X-Request-Id`).
+   - Cold-start detection (`isColdStart`, `bootDurationMs`) tracking container boot overhead.
+   - Real-time Gemini token telemetry (`promptTokens`, `candidatesTokens`, `totalTokens`).
+   - Runaway generation ceiling (`maxOutputTokens: 8192`) on all AI operations.
+   - Process-local global daily circuit breaker (`DAILY_AI_REQUEST_LIMIT`, default 1000) resetting at 00:00 UTC.
+   - Rolling in-memory latency percentiles (p50, p95, p99, max, avg) exposed via `/api/ai/status`.
 
 ---
 
@@ -73,6 +80,7 @@ Backend Server (Express + Security Middleware)
    PORT=3001
    GEMINI_API_KEY=AIzaSy...your_actual_key_here
    GEMINI_MODEL=gemini-3.5-flash-lite
+   DAILY_AI_REQUEST_LIMIT=1000
    ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
    NODE_ENV=development
    ```
@@ -147,5 +155,6 @@ These headers are automatically injected by `server/index.ts` for all served ass
 
 - **Type Check**: `npx tsc --noEmit`
 - **Unit & Security Tests**: `npx vitest run`
+- **Telemetry & Quota Test Suite**: `npx vitest run tests/ai-quota-latency.test.ts tests/structured-logging.test.ts`
 - **Focused Security & Patch Suite**: `npx vitest run tests/security.test.ts tests/patch-validation.test.ts`
 - **30-Step Chromium E2E Gate**: `npx playwright test tests/browser-e2e.spec.ts`

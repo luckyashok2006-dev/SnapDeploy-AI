@@ -15,14 +15,15 @@ This document serves as the authoritative operational runbook and deployment spe
 | **Live Public URL** | [https://snapdeploy-ai.onrender.com](https://snapdeploy-ai.onrender.com) |
 | **Git Repository** | `https://github.com/luckyashok2006-dev/SnapDeploy-AI` |
 | **Git Branch** | `main` |
-| **Verified Release Commit** | `69d5088002ea4bf914903a72407c2f0ead59256d` |
+| **Verified Release Commit** | `041228af5807a490c0bb37f2d260d79634a85163` (Phase 8.2.7 Operational Telemetry & Cost Controls Baseline) |
 | **Base Docker Image** | `node:24-alpine` (multi-stage build, unprivileged user `node`) |
 | **Server Runtime** | Compiled Node.js 24 ESM (`node dist-server/index.js`) |
 | **Container Port Binding** | Injected by platform (`PORT`, default `10000`), binds `HOST=0.0.0.0` |
-| **Health Check Endpoint** | `GET /api/health/liveness` |
+| **Health & Status Endpoints** | `GET /api/health/liveness`, `GET /api/health/readiness`, `GET /api/ai/status` |
 | **Auto-Deploy Behavior** | Enabled on Push to `main` (auto-builds via Dockerfile) |
 | **Production AI Provider** | Google Gemini AI (`GeminiAIProvider`) |
-| **Production AI Model** | `gemini-3.5-flash-lite` |
+| **Production AI Model** | `gemini-3.5-flash-lite` (maxOutputTokens: 8192) |
+| **Daily AI Request Ceiling** | `DAILY_AI_REQUEST_LIMIT=1000` (process-local runaway cost breaker, resets 00:00 UTC) |
 
 ---
 
@@ -54,7 +55,7 @@ This document serves as the authoritative operational runbook and deployment spe
 
 ## 3. Verified Production Validation Matrix
 
-All 16 production capabilities have been forensically tested and validated against the live deployment at `https://snapdeploy-ai.onrender.com`:
+All 21 production capabilities have been forensically tested and validated against the live deployment at `https://snapdeploy-ai.onrender.com`:
 
 | # | Check / Feature | Verification Result | Live Production Evidence |
 | :-: | :--- | :---: | :--- |
@@ -74,6 +75,11 @@ All 16 production capabilities have been forensically tested and validated again
 | **14**| **Missing Asset 404** | **PASSED** | Nonexistent static assets (`/assets/nonexistent.js`) return HTTP 404 rather than fallback HTML. |
 | **15**| **Error Sanitization** | **PASSED** | Client error responses return sanitized error codes and messages without leaking tokens, filesystem paths, or stack traces. |
 | **16**| **WebContainer & ZIP Export**| **PASSED** | Cross-origin isolation headers enable in-browser `SharedArrayBuffer` for WebContainer dev server, terminal, and client-side ZIP export. |
+| **17**| **Cold-Start Telemetry** | **PASSED** | First handled request emits `isColdStart: true` and `bootDurationMs` in structured JSON log; subsequent requests emit `isColdStart: false`. |
+| **18**| **Gemini Token Telemetry** | **PASSED** | Structured completion logs capture `promptTokens`, `candidatesTokens`, and `totalTokens` from Gemini `usageMetadata` without prompt/code leakage. |
+| **19**| **Runaway Cost Safeguard** | **PASSED** | Strict `maxOutputTokens: 8192` enforced across all Gemini generation, diagnostic, repair, and edit operations. |
+| **20**| **Global Daily AI Circuit Breaker** | **PASSED** | Process-local daily ceiling (`DAILY_AI_REQUEST_LIMIT`, default 1000) resets at 00:00 UTC; exceeding quota returns HTTP 429 (`DAILY_QUOTA_EXCEEDED`) with `Retry-After` and `X-RateLimit-*-Daily` headers. |
+| **21**| **Rolling Latency Telemetry** | **PASSED** | Ring buffer (bounded 100 samples) computes rolling `p50`, `p95`, `p99`, `avgMs`, `maxMs`, and `sampleCount` exposed at `GET /api/ai/status`. |
 
 ---
 
@@ -87,9 +93,9 @@ The following architectural and operational concerns are intentionally deferred 
 2.  **Custom Branded Domain & DNS**:
     *   *Current State*: Serving on Render default domain `https://snapdeploy-ai.onrender.com`.
     *   *Upgrade Path*: Provision a custom domain (e.g. `app.snapdeploy.ai`), configure DNS CNAME records, and update `ALLOWED_ORIGINS`.
-3.  **Distributed Rate Limiting (Redis / KeyDB)**:
-    *   *Current State*: Single-instance in-memory map accurately enforces 30 req/min globally.
-    *   *Upgrade Path*: Migrate rate limit state to a Redis/Upstash instance when horizontally scaling across multiple container instances.
+3.  **Distributed Rate Limiting & Multi-Instance Daily Quota (Redis / KeyDB)**:
+    *   *Current State*: Single-instance in-memory map accurately enforces 30 req/min per IP and process-local daily AI ceiling (`DAILY_AI_REQUEST_LIMIT=1000`, 00:00 UTC reset). This process-local ceiling serves as a runaway-cost circuit breaker on single-container deployments, not a distributed billing guarantee.
+    *   *Upgrade Path*: Connect to Redis / Upstash to synchronize both per-IP rate limits and global daily invocation counters when horizontally scaling across multiple container instances.
 4.  **Persistent Server-Side Project Storage**:
     *   *Current State*: All project files, edits, and snapshots reside in the client-side Virtual File System (VFS).
     *   *Upgrade Path*: Add PostgreSQL/Prisma user authentication and S3/R2 storage for server-side workspace persistence.
@@ -114,6 +120,7 @@ The Render Web Service requires the following environment variables:
 | `HOST` | Configuration | `0.0.0.0` |
 | `GEMINI_API_KEY` | Secret | Real Google Gemini API Key from Google AI Studio |
 | `GEMINI_MODEL` | Configuration | `gemini-3.5-flash-lite` |
+| `DAILY_AI_REQUEST_LIMIT` | Configuration | `1000` (Process-local daily AI ceiling; resets 00:00 UTC) |
 | `TRUST_PROXY` | Configuration | `1` |
 | `ALLOWED_ORIGINS` | Configuration | `https://snapdeploy-ai.onrender.com` |
 | `SHUTDOWN_TIMEOUT_MS` | Configuration | `25000` |
@@ -134,5 +141,6 @@ The Render Web Service requires the following environment variables:
 ### C. Incident Response & Troubleshooting
 *   **503 Service Unavailable (`GEMINI_PROVIDER_UNAVAILABLE`)**: Verify `GEMINI_API_KEY` is present in Render Environment Variables and not expired/quota-exhausted in Google AI Studio. Check `/api/health/readiness`.
 *   **429 Too Many Requests (`RATE_LIMIT_EXCEEDED`)**: Client has exceeded 30 AI requests within 60 seconds. Inspect the `Retry-After` response header.
+*   **429 Too Many Requests (`DAILY_QUOTA_EXCEEDED`)**: Process-local daily AI request ceiling reached (default 1000 requests/day). Check `Retry-After` header (seconds remaining until 00:00 UTC reset) or `X-RateLimit-Reset-Daily` timestamp. To adjust, configure `DAILY_AI_REQUEST_LIMIT`.
 *   **CORS Error (`Not allowed by CORS`)**: Verify the calling domain is listed in `ALLOWED_ORIGINS`.
 *   **WebContainer Initialization Failure**: Inspect browser console for `SharedArrayBuffer` errors. Ensure `COOP` and `COEP` response headers are not stripped by intermediate proxies.
