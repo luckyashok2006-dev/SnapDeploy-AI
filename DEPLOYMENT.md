@@ -15,14 +15,14 @@ This document serves as the authoritative operational runbook and deployment spe
 | **Live Public URL** | [https://snapdeploy-ai.onrender.com](https://snapdeploy-ai.onrender.com) |
 | **Git Repository** | `https://github.com/luckyashok2006-dev/SnapDeploy-AI` |
 | **Git Branch** | `main` |
-| **Verified Release Commit** | `041228af5807a490c0bb37f2d260d79634a85163` (Phase 8.2.7 Operational Telemetry & Cost Controls Baseline) |
+| **Verified Release Commit** | Phase 8.2.9 Controlled Beta Blocker Repair Baseline |
 | **Base Docker Image** | `node:24-alpine` (multi-stage build, unprivileged user `node`) |
 | **Server Runtime** | Compiled Node.js 24 ESM (`node dist-server/index.js`) |
 | **Container Port Binding** | Injected by platform (`PORT`, default `10000`), binds `HOST=0.0.0.0` |
 | **Health & Status Endpoints** | `GET /api/health/liveness`, `GET /api/health/readiness`, `GET /api/ai/status` |
 | **Auto-Deploy Behavior** | Enabled on Push to `main` (auto-builds via Dockerfile) |
 | **Production AI Provider** | Google Gemini AI (`GeminiAIProvider`) |
-| **Production AI Model** | `gemini-3.5-flash-lite` (maxOutputTokens: 8192) |
+| **Production AI Model** | `gemini-3.5-flash-lite` (generate: 32,768 tokens; diagnose/repair/edit: 8,192 tokens) |
 | **Daily AI Request Ceiling** | `DAILY_AI_REQUEST_LIMIT=1000` (process-local runaway cost breaker, resets 00:00 UTC) |
 
 ---
@@ -77,9 +77,12 @@ All 21 production capabilities have been forensically tested and validated again
 | **16**| **WebContainer & ZIP Export**| **PASSED** | Cross-origin isolation headers enable in-browser `SharedArrayBuffer` for WebContainer dev server, terminal, and client-side ZIP export. |
 | **17**| **Cold-Start Telemetry** | **PASSED** | First handled request emits `isColdStart: true` and `bootDurationMs` in structured JSON log; subsequent requests emit `isColdStart: false`. |
 | **18**| **Gemini Token Telemetry** | **PASSED** | Structured completion logs capture `promptTokens`, `candidatesTokens`, and `totalTokens` from Gemini `usageMetadata` without prompt/code leakage. |
-| **19**| **Runaway Cost Safeguard** | **PASSED** | Strict `maxOutputTokens: 8192` enforced across all Gemini generation, diagnostic, repair, and edit operations. |
+| **19**| **Differentiated Token Limits** | **PASSED** | Full project generation uses `DEFAULT_GENERATION_MAX_OUTPUT_TOKENS = 32768` (configurable via `GENERATION_MAX_OUTPUT_TOKENS`), supporting complex multi-file blueprints (>25,000 tokens) with zero JSON truncation. Diagnostic, repair, and edit operations remain strictly bounded at `DEFAULT_BOUNDED_MAX_OUTPUT_TOKENS = 8192`. |
 | **20**| **Global Daily AI Circuit Breaker** | **PASSED** | Process-local daily ceiling (`DAILY_AI_REQUEST_LIMIT`, default 1000) resets at 00:00 UTC; exceeding quota returns HTTP 429 (`DAILY_QUOTA_EXCEEDED`) with `Retry-After` and `X-RateLimit-*-Daily` headers. |
 | **21**| **Rolling Latency Telemetry** | **PASSED** | Ring buffer (bounded 100 samples) computes rolling `p50`, `p95`, `p99`, `avgMs`, `maxMs`, and `sampleCount` exposed at `GET /api/ai/status`. |
+| **22**| **Truncation Anomaly Detection** | **PASSED** | Explicit detection of Gemini `finishReason === 'MAX_TOKENS'` emits high-visibility error and logging alerts instead of failing silently on malformed JSON. |
+| **23**| **Next-Project Creation UX** | **PASSED** | Success Card provides immediate "Create Another" reset action and inline quick prompt entry (`quick-next-prompt-input`) to support multi-project workflows without navigating away. |
+| **24**| **In-Flight Synthesis & Mount Telemetry**| **PASSED** | Prominent status explanation banner (`generation-busy-status`) and dynamic button label ("Preparing Preview...") clarify in-flight Gemini blueprint synthesis and WebContainer dependency installation. |
 
 ---
 
@@ -120,6 +123,7 @@ The Render Web Service requires the following environment variables:
 | `HOST` | Configuration | `0.0.0.0` |
 | `GEMINI_API_KEY` | Secret | Real Google Gemini API Key from Google AI Studio |
 | `GEMINI_MODEL` | Configuration | `gemini-3.5-flash-lite` |
+| `GENERATION_MAX_OUTPUT_TOKENS` | Configuration | `32768` (Full project generation output token ceiling; valid range: 1024–65536) |
 | `DAILY_AI_REQUEST_LIMIT` | Configuration | `1000` (Process-local daily AI ceiling; resets 00:00 UTC) |
 | `TRUST_PROXY` | Configuration | `1` |
 | `ALLOWED_ORIGINS` | Configuration | `https://snapdeploy-ai.onrender.com` |

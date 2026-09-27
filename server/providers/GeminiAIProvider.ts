@@ -35,6 +35,22 @@ const CANDIDATE_LOCK_PATHS = [
 const CANONICAL_LOCK_PATH = CANDIDATE_LOCK_PATHS.find((p) => fs.existsSync(p)) || CANDIDATE_LOCK_PATHS[0];
 let cachedCanonicalLock: string | null = null;
 
+export const DEFAULT_GENERATION_MAX_OUTPUT_TOKENS = 32768;
+export const DEFAULT_BOUNDED_MAX_OUTPUT_TOKENS = 8192;
+
+export function resolveGenerationMaxOutputTokens(): number {
+  const envVal = process.env.GENERATION_MAX_OUTPUT_TOKENS;
+  if (!envVal || typeof envVal !== 'string') {
+    return DEFAULT_GENERATION_MAX_OUTPUT_TOKENS;
+  }
+  const parsed = parseInt(envVal.trim(), 10);
+  if (isNaN(parsed) || parsed < 1024 || parsed > 65536) {
+    logger.warn(`Invalid GENERATION_MAX_OUTPUT_TOKENS "${envVal}". Falling back to default (${DEFAULT_GENERATION_MAX_OUTPUT_TOKENS}).`);
+    return DEFAULT_GENERATION_MAX_OUTPUT_TOKENS;
+  }
+  return parsed;
+}
+
 export interface AIExecutionRecord {
   id: string;
   requestId?: string;
@@ -268,6 +284,8 @@ export class GeminiAIProvider implements AIProvider {
       throw new Error('Generation prompt cannot be empty');
     }
 
+    const maxOutputTokens = resolveGenerationMaxOutputTokens();
+
     const systemInstruction = `You are the code-generation engine for SnapDeploy AI.
 Generate a complete, production-ready, fully functional Vite + React 18 + TypeScript web application.
 
@@ -291,7 +309,10 @@ CRITICAL REQUIREMENTS:
    - All TypeScript files must compile cleanly under "npx tsc --noEmit" with 0 errors.
    - Every component in /src/components/ that is passed props from /src/App.tsx MUST declare all of those props in its Props interface AND destructure them in the function parameters.
    - Any callback function called in a component (e.g. onAddCustomer, onSelectInvoice, onDeleteInvoice, onNavigate, onClose) MUST be declared in props with optional typing (e.g. onAddCustomer?: (item: any) => void) and destructured in parameters ({ ..., onAddCustomer }).
-   - NEVER reference an undeclared identifier.`;
+   - NEVER reference an undeclared identifier.
+7. COMPACT SOURCE CODE EFFICIENCY:
+   - Write clean, concise, non-redundant source code.
+   - Omit conversational narrative comments and verbose docstrings to maximize token density while preserving complete implementations.`;
 
     try {
       const response = await this.executeWithRetry(() => client.models.generateContent({
@@ -299,7 +320,7 @@ CRITICAL REQUIREMENTS:
         contents: `User Prompt: ${promptText}\nProject Framework: ${input.framework || 'vite-react'}\nSuggested Name: ${input.name || 'web-app'}`,
         config: {
           systemInstruction,
-          maxOutputTokens: 8192,
+          maxOutputTokens,
           responseMimeType: 'application/json',
           responseSchema: {
             type: 'object',
@@ -344,8 +365,24 @@ CRITICAL REQUIREMENTS:
       }), 2, 180_000, { requestId: input.requestId, operation: 'generate' });
 
       const usageMetadata = this.extractUsageMetadata(response);
+      const primaryCandidate = response?.candidates?.[0];
+      const finishReason = primaryCandidate?.finishReason;
+      const isTruncated = finishReason === 'MAX_TOKENS';
+
+      if (isTruncated) {
+        logger.warn('Gemini generation output truncated by maxOutputTokens limit', {
+          requestId: input.requestId,
+          maxOutputTokens,
+          finishReason,
+          usageMetadata
+        });
+      }
+
       const responseText = response.text || '';
       if (!responseText.trim()) {
+        if (isTruncated) {
+          throw new Error(`Generation response was truncated by model output token limit (${maxOutputTokens} tokens reached, finishReason: MAX_TOKENS). Incomplete response payload.`);
+        }
         throw new Error('Gemini returned an empty generation response');
       }
 
@@ -353,7 +390,14 @@ CRITICAL REQUIREMENTS:
       try {
         parsed = JSON.parse(responseText);
       } catch (parseErr: any) {
+        if (isTruncated) {
+          throw new Error(`Generation response truncated: output exceeded maxOutputTokens limit of ${maxOutputTokens} (finishReason: MAX_TOKENS). ${parseErr?.message}`);
+        }
         throw new Error(`Failed to parse Gemini structured JSON: ${parseErr?.message}`);
+      }
+
+      if (isTruncated) {
+        throw new Error(`Generation response was truncated by model output token limit (${maxOutputTokens} tokens reached, finishReason: MAX_TOKENS). Incomplete project payload rejected.`);
       }
 
       // Security Validation of Generated Plan & Files
@@ -1129,7 +1173,7 @@ ${Object.entries(relevantFiles).map(([path, code]) => `File: ${path}\n\`\`\`tsx\
         contents: prompt,
         config: {
           systemInstruction,
-          maxOutputTokens: 8192,
+          maxOutputTokens: DEFAULT_BOUNDED_MAX_OUTPUT_TOKENS,
           responseMimeType: 'application/json',
           responseSchema: {
             type: 'object',
@@ -1267,7 +1311,7 @@ ${Object.entries(relevantFiles).map(([path, code]) => `=== FILE: ${path} ===\n${
         contents: prompt,
         config: {
           systemInstruction,
-          maxOutputTokens: 8192,
+          maxOutputTokens: DEFAULT_BOUNDED_MAX_OUTPUT_TOKENS,
           responseMimeType: 'application/json',
           responseSchema: {
             type: 'object',
@@ -1447,7 +1491,7 @@ ${projectContextStr}`;
         contents,
         config: {
           systemInstruction,
-          maxOutputTokens: 8192,
+          maxOutputTokens: DEFAULT_BOUNDED_MAX_OUTPUT_TOKENS,
           responseMimeType: 'application/json',
           responseSchema: {
             type: 'object',

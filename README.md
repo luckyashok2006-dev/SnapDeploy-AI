@@ -80,6 +80,7 @@ Backend Server (Express + Security Middleware)
    PORT=3001
    GEMINI_API_KEY=AIzaSy...your_actual_key_here
    GEMINI_MODEL=gemini-3.5-flash-lite
+   GENERATION_MAX_OUTPUT_TOKENS=32768
    DAILY_AI_REQUEST_LIMIT=1000
    ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
    NODE_ENV=development
@@ -122,6 +123,7 @@ npm run dev
 ### Production AI & Mock-Provider Safety Contract
 - **Mock Providers Disabled**: In production (`NODE_ENV=production`), mock deployment, mock auth, and mock database providers are strictly disabled and will throw if invoked. There is **zero** automatic fallback to mock services in production.
 - **Fail-Closed AI Endpoints**: If `GEMINI_API_KEY` is absent or unconfigured in production, all AI generation, repair, and diagnostic endpoints return **HTTP 503** (`GEMINI_PROVIDER_UNAVAILABLE`), and the readiness probe (`/api/health/readiness`) reports **HTTP 503** (`GEMINI_PROVIDER_UNCONFIGURED`). Liveness (`/api/health/liveness`) remains **HTTP 200**.
+- **Differentiated AI Token Limits**: Full project generation uses `DEFAULT_GENERATION_MAX_OUTPUT_TOKENS = 32768` (configurable via `GENERATION_MAX_OUTPUT_TOKENS`), supporting complex multi-file blueprints (>25,000 tokens) with zero JSON truncation. Diagnostic, repair, and code edit operations remain strictly bounded at `DEFAULT_BOUNDED_MAX_OUTPUT_TOKENS = 8192`.
 
 ---
 

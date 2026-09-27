@@ -61,9 +61,9 @@ export const GenerationPanel: React.FC<GenerationPanelProps> = ({ onOpenProject 
     { title: 'E-Commerce Storefront & Cart', prompt: 'Build a responsive modern e-commerce storefront with product catalog, filter tabs, and interactive cart.' }
   ];
 
-  const handleGenerate = async (e?: React.FormEvent) => {
+  const handleGenerate = async (e?: React.FormEvent, overridePrompt?: string) => {
     if (e) e.preventDefault();
-    const activePrompt = prompt.trim();
+    const activePrompt = (overridePrompt !== undefined ? overridePrompt : prompt).trim();
     if (!activePrompt) return;
 
     // Guard: Prevent double-click or concurrent generation
@@ -146,12 +146,24 @@ export const GenerationPanel: React.FC<GenerationPanelProps> = ({ onOpenProject 
     }
   };
 
+  const [nextPrompt, setNextPrompt] = useState<string>('');
+
   const handleCreateAnother = () => {
     setLifecycleState('ready');
     setLastCreatedProject(null);
     setErrorMessage(null);
     setPrompt('');
+    setNextPrompt('');
     setGenerationState('idle');
+  };
+
+  const handleCreateNextProject = () => {
+    const trimmed = nextPrompt.trim();
+    if (!trimmed) return;
+    setNextPrompt('');
+    setLastCreatedProject(null);
+    setErrorMessage(null);
+    handleGenerate(undefined, trimmed);
   };
 
   const isGenerating = lifecycleState === 'generating';
@@ -243,7 +255,7 @@ export const GenerationPanel: React.FC<GenerationPanelProps> = ({ onOpenProject 
             </div>
 
             {/* Action Buttons */}
-            <div className="flex flex-col sm:flex-row items-center gap-2 pt-1">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
               <button
                 type="button"
                 data-testid="open-project-btn"
@@ -254,7 +266,7 @@ export const GenerationPanel: React.FC<GenerationPanelProps> = ({ onOpenProject 
                     openFile(lastCreatedProject.id, '/src/App.tsx');
                   }
                 }}
-                className="w-full sm:flex-1 py-2.5 rounded-xl bg-gradient-to-r from-violet-600 via-indigo-600 to-emerald-500 hover:brightness-110 text-white text-xs font-semibold shadow-lg shadow-violet-600/20 transition flex items-center justify-center gap-2"
+                className="w-full py-2.5 rounded-xl bg-gradient-to-r from-violet-600 via-indigo-600 to-emerald-500 hover:brightness-110 text-white text-xs font-semibold shadow-lg shadow-violet-600/20 transition flex items-center justify-center gap-2"
               >
                 <span>Open Project in Editor</span>
                 <ArrowRight className="w-3.5 h-3.5" />
@@ -263,11 +275,44 @@ export const GenerationPanel: React.FC<GenerationPanelProps> = ({ onOpenProject 
                 type="button"
                 data-testid="create-another-btn"
                 onClick={handleCreateAnother}
-                className="w-full sm:w-auto px-4 py-2.5 rounded-xl text-xs font-semibold text-slate-300 hover:text-white bg-slate-900 hover:bg-slate-800 border border-white/10 transition flex items-center justify-center gap-1.5"
+                className="w-full py-2.5 rounded-xl text-xs font-semibold text-violet-200 hover:text-white bg-violet-600/20 hover:bg-violet-600/30 border border-violet-500/40 transition flex items-center justify-center gap-1.5 shadow-sm"
               >
                 <Plus className="w-3.5 h-3.5 text-violet-400" />
                 <span>Create Another</span>
               </button>
+            </div>
+
+            {/* Quick Prompt Entry for Immediate Next Generation (ISSUE-02 UX Solution) */}
+            <div className="pt-2 border-t border-emerald-500/20 space-y-1.5">
+              <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">
+                Or Start Another Project Immediately
+              </label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  placeholder="Describe your next application..."
+                  value={nextPrompt}
+                  onChange={(e) => setNextPrompt(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && nextPrompt.trim()) {
+                      e.preventDefault();
+                      handleCreateNextProject();
+                    }
+                  }}
+                  className="flex-1 bg-slate-950/80 border border-white/10 rounded-xl px-3 py-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-violet-500 transition"
+                  data-testid="quick-next-prompt-input"
+                />
+                <button
+                  type="button"
+                  data-testid="quick-generate-next-btn"
+                  disabled={!nextPrompt.trim()}
+                  onClick={handleCreateNextProject}
+                  className="px-3.5 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white text-xs font-semibold transition shrink-0 flex items-center gap-1.5 shadow-md shadow-violet-600/20"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>Build</span>
+                </button>
+              </div>
             </div>
           </div>
 
@@ -321,10 +366,26 @@ export const GenerationPanel: React.FC<GenerationPanelProps> = ({ onOpenProject 
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
                 disabled={isGenerating}
+                title={isGenerating ? "Generation in progress. Input is temporarily paused until project setup completes." : undefined}
                 placeholder="e.g. Build a SaaS invoice dashboard with customers, invoices, revenue metrics and a responsive sidebar..."
                 className="w-full bg-[#111827] border border-white/10 rounded-xl p-3 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-violet-500 transition resize-none leading-relaxed disabled:opacity-60"
               />
             </div>
+
+            {/* In-Flight / Installing Status Explanation (ISSUE-03 UX Solution) */}
+            {isGenerating && (
+              <div
+                className="flex items-center gap-2 px-3 py-2 rounded-xl bg-violet-950/40 border border-violet-500/30 text-xs text-violet-300 animate-in fade-in"
+                data-testid="generation-busy-status"
+              >
+                <RefreshCw className="w-3.5 h-3.5 animate-spin text-violet-400 shrink-0" />
+                <span className="truncate">
+                  {generationState === 'mounting' || generationState === 'installing' || generationState === 'starting'
+                    ? 'Preparing WebContainer preview & installing dependencies… Input temporarily paused.'
+                    : 'Synthesizing application blueprint with Gemini AI… Input temporarily paused.'}
+                </span>
+              </div>
+            )}
 
             <button
               type="submit"
@@ -334,7 +395,11 @@ export const GenerationPanel: React.FC<GenerationPanelProps> = ({ onOpenProject 
               {isGenerating ? (
                 <>
                   <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                  <span>Building Application...</span>
+                  <span>
+                    {generationState === 'mounting' || generationState === 'installing' || generationState === 'starting'
+                      ? 'Preparing Preview...'
+                      : 'Building Application...'}
+                  </span>
                 </>
               ) : lifecycleState === 'error' ? (
                 <>

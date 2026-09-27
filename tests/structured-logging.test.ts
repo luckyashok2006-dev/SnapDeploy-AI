@@ -12,7 +12,12 @@ import {
   isColdStartPending,
   getServerBootTime
 } from '../server/logger';
-import { geminiAIProvider } from '../server/providers/GeminiAIProvider';
+import {
+  geminiAIProvider,
+  DEFAULT_GENERATION_MAX_OUTPUT_TOKENS,
+  DEFAULT_BOUNDED_MAX_OUTPUT_TOKENS,
+  resolveGenerationMaxOutputTokens
+} from '../server/providers/GeminiAIProvider';
 
 describe('Phase 8.1 — Step 12: Structured Logging & Request Correlation', () => {
   let server: http.Server;
@@ -491,13 +496,13 @@ describe('Phase 8.1 — Step 12: Structured Logging & Request Correlation', () =
       }
     });
 
-    it('2. Enforces maxOutputTokens: 8192 across all four Gemini generation paths', async () => {
+    it('2. Enforces dedicated GENERATION_MAX_OUTPUT_TOKENS (32768) for project generation while keeping diagnose, repair, and edit strictly bounded at 8192', async () => {
       const mockGenerateContent = vi.fn();
       (geminiAIProvider as any).ai = {
         models: { generateContent: mockGenerateContent }
       };
 
-      // Path 1: generateProject
+      // Path 1: generateProject (Uses dedicated generation token ceiling, default 32768)
       mockGenerateContent.mockResolvedValueOnce({
         text: JSON.stringify({
           name: 'cap-app',
@@ -512,9 +517,10 @@ describe('Phase 8.1 — Step 12: Structured Logging & Request Correlation', () =
         usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 20, totalTokenCount: 30 }
       });
       await geminiAIProvider.generateProject({ prompt: 'test project', requestId: 'trace-cap-1' });
-      expect(mockGenerateContent.mock.calls[0][0].config.maxOutputTokens).toBe(8192);
+      expect(mockGenerateContent.mock.calls[0][0].config.maxOutputTokens).toBe(DEFAULT_GENERATION_MAX_OUTPUT_TOKENS);
+      expect(mockGenerateContent.mock.calls[0][0].config.maxOutputTokens).toBe(32768);
 
-      // Path 2: diagnoseError
+      // Path 2: diagnoseError (Strictly bounded at 8192)
       mockGenerateContent.mockResolvedValueOnce({
         text: JSON.stringify({
           category: 'syntax',
@@ -539,9 +545,10 @@ describe('Phase 8.1 — Step 12: Structured Logging & Request Correlation', () =
         relevantFiles: { '/src/App.tsx': 'const a =' },
         requestId: 'trace-cap-2'
       });
+      expect(mockGenerateContent.mock.calls[1][0].config.maxOutputTokens).toBe(DEFAULT_BOUNDED_MAX_OUTPUT_TOKENS);
       expect(mockGenerateContent.mock.calls[1][0].config.maxOutputTokens).toBe(8192);
 
-      // Path 3: generateRepairPatch
+      // Path 3: generateRepairPatch (Strictly bounded at 8192)
       mockGenerateContent.mockResolvedValueOnce({
         text: JSON.stringify({
           summary: 'Fix syntax error',
@@ -571,9 +578,10 @@ describe('Phase 8.1 — Step 12: Structured Logging & Request Correlation', () =
         relevantFiles: { '/src/App.tsx': 'const a =' },
         requestId: 'trace-cap-3'
       });
+      expect(mockGenerateContent.mock.calls[2][0].config.maxOutputTokens).toBe(DEFAULT_BOUNDED_MAX_OUTPUT_TOKENS);
       expect(mockGenerateContent.mock.calls[2][0].config.maxOutputTokens).toBe(8192);
 
-      // Path 4: proposeEdit
+      // Path 4: proposeEdit (Strictly bounded at 8192)
       mockGenerateContent.mockResolvedValueOnce({
         text: JSON.stringify({
           summary: 'Add feature',
@@ -587,7 +595,116 @@ describe('Phase 8.1 — Step 12: Structured Logging & Request Correlation', () =
         relevantFiles: { '/src/App.tsx': 'export default function App() {}' },
         requestId: 'trace-cap-4'
       });
+      expect(mockGenerateContent.mock.calls[3][0].config.maxOutputTokens).toBe(DEFAULT_BOUNDED_MAX_OUTPUT_TOKENS);
       expect(mockGenerateContent.mock.calls[3][0].config.maxOutputTokens).toBe(8192);
+    });
+
+    it('4. Respects custom GENERATION_MAX_OUTPUT_TOKENS and validates range safely', async () => {
+      const originalEnv = process.env.GENERATION_MAX_OUTPUT_TOKENS;
+      try {
+        // Valid custom value
+        process.env.GENERATION_MAX_OUTPUT_TOKENS = '16384';
+        expect(resolveGenerationMaxOutputTokens()).toBe(16384);
+
+        // Max boundary
+        process.env.GENERATION_MAX_OUTPUT_TOKENS = '65536';
+        expect(resolveGenerationMaxOutputTokens()).toBe(65536);
+
+        // Invalid: too large -> falls back to default 32768
+        process.env.GENERATION_MAX_OUTPUT_TOKENS = '131072';
+        expect(resolveGenerationMaxOutputTokens()).toBe(32768);
+
+        // Invalid: too small -> falls back to default 32768
+        process.env.GENERATION_MAX_OUTPUT_TOKENS = '512';
+        expect(resolveGenerationMaxOutputTokens()).toBe(32768);
+
+        // Invalid: non-numeric -> falls back to default 32768
+        process.env.GENERATION_MAX_OUTPUT_TOKENS = 'invalid-tokens';
+        expect(resolveGenerationMaxOutputTokens()).toBe(32768);
+      } finally {
+        if (originalEnv !== undefined) {
+          process.env.GENERATION_MAX_OUTPUT_TOKENS = originalEnv;
+        } else {
+          delete process.env.GENERATION_MAX_OUTPUT_TOKENS;
+        }
+      }
+    });
+
+    it('5. Detects model output truncation (finishReason: MAX_TOKENS) and returns explicit error', async () => {
+      const mockGenerateContent = vi.fn().mockResolvedValue({
+        text: '{"name":"truncated-app","files":[{"path":"/src/App.tsx","content":"export default',
+        candidates: [
+          {
+            finishReason: 'MAX_TOKENS'
+          }
+        ],
+        usageMetadata: {
+          promptTokenCount: 150,
+          candidatesTokenCount: 32768,
+          totalTokenCount: 32918
+        }
+      });
+
+      (geminiAIProvider as any).ai = {
+        models: { generateContent: mockGenerateContent }
+      };
+
+      await expect(
+        geminiAIProvider.generateProject({
+          prompt: 'Generate an extremely massive codebase that exceeds the token ceiling',
+          requestId: 'truncation-test-req'
+        })
+      ).rejects.toThrow(/finishReason: MAX_TOKENS/);
+    });
+
+    it('6. Handles complex multi-file generation responses safely exceeding 8192 token threshold', async () => {
+      const files: any[] = [
+        { path: '/src/main.tsx', purpose: 'Entry', content: "import App from './App'; export default App;" },
+        { path: '/src/App.tsx', purpose: 'App', content: 'export default function App() { return <div>Kanban</div>; }' }
+      ];
+      // Generate 12 component files to simulate complex Kanban architecture
+      for (let i = 1; i <= 12; i++) {
+        files.push({
+          path: `/src/components/Module${i}.tsx`,
+          purpose: `Kanban Column ${i}`,
+          content: `export const Module${i} = () => <div className="p-4 bg-slate-900 border border-white/10 rounded-xl">Column ${i} Content with deep state and drag-drop cards</div>;`
+        });
+      }
+
+      const mockGenerateContent = vi.fn().mockResolvedValue({
+        text: JSON.stringify({
+          name: 'complex-kanban-board',
+          framework: 'vite-react',
+          dependencies: [],
+          scripts: { dev: 'vite', build: 'vite build' },
+          files
+        }),
+        candidates: [{ finishReason: 'STOP' }],
+        usageMetadata: {
+          promptTokenCount: 300,
+          candidatesTokenCount: 10500, // Exceeds previous 8192 boundary
+          totalTokenCount: 10800
+        }
+      });
+
+      (geminiAIProvider as any).ai = {
+        models: { generateContent: mockGenerateContent }
+      };
+
+      const result = await geminiAIProvider.generateProject({
+        prompt: 'Kanban board with columns and cards',
+        requestId: 'complex-kanban-test'
+      });
+
+      expect(result.plan.name).toBe('complex-kanban-board');
+      expect(Object.keys(result.files).length).toBeGreaterThanOrEqual(14);
+
+      // Verify execution history captured candidatesTokens: 10500
+      const history = geminiAIProvider.getExecutionHistory();
+      const rec = history.find((h) => h.requestId === 'complex-kanban-test');
+      expect(rec).toBeDefined();
+      expect(rec?.candidatesTokens).toBe(10500);
+      expect(rec?.totalTokens).toBe(10800);
     });
 
     it('3. Gracefully handles responses without usageMetadata (backward compatibility)', async () => {
