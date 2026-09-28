@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { Diagnosis, Patch, VerificationResult, AIEvent } from '../types/workspace';
 import { useProjectStore } from './projectStore';
+import { useRepairStore, isEpisodeDiagnosing, isEpisodeApplying, isEpisodeVerifying } from './repairStore';
 
 export interface AgentStoreState {
   generationState: 'idle' | 'planning' | 'generating' | 'mounting' | 'installing' | 'starting' | 'ready' | 'error';
@@ -163,6 +164,16 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
   },
 
   syncActiveProject: (projectId: string) => {
+    let isDiag = false;
+    let isRep = false;
+    try {
+      const activeEp = useRepairStore.getState().getActiveEpisode(projectId);
+      if (activeEp) {
+        isDiag = isEpisodeDiagnosing(activeEp);
+        isRep = isEpisodeApplying(activeEp) || isEpisodeVerifying(activeEp);
+      }
+    } catch {}
+
     set((state) => {
       const projPatch = state.pendingPatchByProject[projectId] ?? null;
       const projDiag = state.diagnosisByProject[projectId] ?? null;
@@ -172,6 +183,8 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
         patchProjectId: projPatch ? projectId : null,
         diagnosis: projDiag,
         verificationResult: projVerif,
+        isDiagnosing: isDiag,
+        isRepairing: isRep,
         isDiffModalOpen: false
       };
     });

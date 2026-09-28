@@ -36,9 +36,10 @@ interface DebugManagerPanelProps {
 }
 
 export const DebugManagerPanel: React.FC<DebugManagerPanelProps> = ({ onOpenFaultModal }) => {
-  const { lastEvidence, status: runtimeStatus, setIsBottomDrawerOpen, setActiveBottomTab } = useRuntimeStore();
+  const { status: runtimeStatus, setIsBottomDrawerOpen, setActiveBottomTab } = useRuntimeStore();
   const { setPendingPatch, setIsDiffModalOpen } = useAgentStore();
   const { activeProjectId } = useProjectStore();
+  const lastEvidence = useRuntimeStore((s) => s.getLastEvidence(activeProjectId));
   const { isProjectLoopPaused } = useRepairStore();
   const episodes = useRepairStore((state) => state.episodes);
   const activeEpisodeIds = useRepairStore((state) => state.activeEpisodeId);

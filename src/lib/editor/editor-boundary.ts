@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Shared Editor Boundary Reset Helper
  * 
  * Safely synchronizes Monaco and Zustand editor state across transactional boundaries
@@ -12,6 +12,7 @@ export async function resetEditorBoundary(
 ): Promise<void> {
   const { useEditorStore } = await import('../../store/editorStore');
   useEditorStore.getState().clearDirty(projectId);
+  useEditorStore.getState().syncTabsWithFiles(projectId, Object.keys(postFiles));
 
   const baselineMap: Record<string, string> = {};
   for (const [p, f] of Object.entries(postFiles)) {

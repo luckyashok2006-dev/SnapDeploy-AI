@@ -59,9 +59,17 @@ export const useProjectStore = create<ProjectStoreState>()(
         if (get().projects[id]) {
           set({ activeProjectId: id });
           get().syncProjectFilesFromVFS(id);
+          if (typeof window !== 'undefined') {
+            (window as any).useAgentStore?.getState?.()?.syncActiveProject?.(id);
+            (window as any).useRuntimeStore?.getState?.()?.syncActiveProject?.(id);
+          }
           try {
             const { useAgentStore } = require('./agentStore');
             useAgentStore.getState().syncActiveProject?.(id);
+          } catch {}
+          try {
+            const { useRuntimeStore } = require('./runtimeStore');
+            useRuntimeStore.getState().syncActiveProject?.(id);
           } catch {}
         }
       },
@@ -73,6 +81,10 @@ export const useProjectStore = create<ProjectStoreState>()(
         try {
           const { useAgentStore } = await import('./agentStore');
           useAgentStore.getState().syncActiveProject?.(id);
+        } catch {}
+        try {
+          const { useRuntimeStore } = await import('./runtimeStore');
+          useRuntimeStore.getState().syncActiveProject?.(id);
         } catch {}
         // Forward to runtime store canonical initialization
         const { useRuntimeStore } = await import("./runtimeStore");

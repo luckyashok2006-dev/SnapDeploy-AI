@@ -30,6 +30,7 @@ export interface RuntimeStoreState {
   getLastEvidence: (projectId?: string | null) => ExecutionEvidence | null;
 
   // Actions
+  syncActiveProject: (projectId: string) => void;
   recordEvidence: (evidence: ExecutionEvidence, projectId?: string | null) => void;
   clearEvidence: (projectId?: string | null) => void;
   bootRuntime: () => Promise<void>;
@@ -85,6 +86,19 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     return get().evidenceByProject[targetId] ?? null;
   },
 
+  syncActiveProject: (projectId: string) => {
+    set((state) => {
+      const projLogs = state.logsByProject[projectId] || DEFAULT_TERMINAL_LOGS;
+      const projEvidence = state.evidenceByProject[projectId] ?? null;
+      const projHistory = state.executionHistoryByProject[projectId] || [];
+      return {
+        terminalLogs: projLogs,
+        lastEvidence: projEvidence,
+        executionHistory: projHistory
+      };
+    });
+  },
+
   bootRuntime: async () => {
     if (get().status === 'ready' || get().status === 'running') return;
     set({ status: 'booting' });
@@ -94,8 +108,14 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       });
 
       runtimeManager.onServerReady((port, url) => {
+        const activeId = getActiveProjectId();
+        const mountedId = runtimeManager.getCurrentProjectId();
+        if (activeId && mountedId && activeId !== mountedId) {
+          console.warn(`[RuntimeStore] onServerReady callback ignored: active project (${activeId}) does not match server project (${mountedId})`);
+          return;
+        }
         set({ previewUrl: url, previewPort: port, status: 'ready' });
-        get().addTerminalLog(`\x1b[32m[Live Server]\x1b[0m Ready on ${url} (port ${port})`);
+        get().addTerminalLog(`\x1b[32m[Live Server]\x1b[0m Ready on ${url} (port ${port})`, activeId || mountedId || undefined);
       });
 
       await runtimeManager.boot();
@@ -109,6 +129,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
 
   initializeProject: async (projectId: string) => {
     if (!projectId) return;
+    get().syncActiveProject(projectId);
     const store = get();
     const projectIdAtStart = projectId;
     
@@ -366,7 +387,7 @@ export function broadcastRuntimeSession() {
   if (typeof window === 'undefined') return;
   try {
     const runtimeState = useRuntimeStore.getState();
-    const projectId = useProjectStore.getState?.()?.activeProjectId || null;
+    const projectId = getActiveProjectId();
     const session: RuntimeSessionPayload = {
       projectId,
       status: runtimeState.status,

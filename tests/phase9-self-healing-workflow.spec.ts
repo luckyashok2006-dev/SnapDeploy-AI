@@ -8,10 +8,10 @@ test.describe("Phase 9.1: Self-Healing Engineering Loop - Real Browser Validatio
 
     // Forward browser logs for complete auditability
     page.on("console", (msg) => {
-      const txt = msg.text();
-      if (txt.includes("[Self-Healing]") || txt.includes("[RepairCoordinator]") || txt.includes("[Repair Engine]") || txt.includes("[Verification]")) {
-        console.log(`[Browser Console: ${msg.type()}]`, txt);
-      }
+      console.log(`[Browser Console: ${msg.type()}]`, msg.text());
+    });
+    page.on("pageerror", (err) => {
+      console.log(`[Browser PageError]`, err.message);
     });
 
     console.log(">>> [Phase 9.1 Browser Test] Navigating to http://localhost:3000...");
@@ -118,23 +118,26 @@ test.describe("Phase 9.1: Self-Healing Engineering Loop - Real Browser Validatio
       // Record evidence in runtime store (which also records the failure in runtime history)
       useRuntimeStore.getState().recordEvidence(fakeEvidence, projId);
 
-      // Retrieve the newly created episode (created synchronously by handleRuntimeFailure inside recordEvidence)
+      // Wait for automated diagnosis and episode proposal to settle cleanly
       let episode = useRepairStore.getState().getActiveEpisode(projId);
-      if (!episode) {
-        episode = await repairCoordinator.handleRuntimeFailure(projId, fakeEvidence);
+      for (let i = 0; i < 20; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+        episode = useRepairStore.getState().getActiveEpisode(projId);
+        if (episode && (episode.status === 'proposal_ready' || episode.status === 'PATCH_READY')) {
+          break;
+        }
       }
 
       return {
         hasEpisode: !!episode,
         episodeId: episode?.failureEpisodeId,
         initialStatus: episode?.status,
-        canonicalState: episode ? getCanonicalState(episode) : null,
-        originalFile
+        canonicalState: episode ? getCanonicalState(episode) : null
       };
     }, initResult.projId);
 
     expect(faultResult.hasEpisode).toBe(true);
-    expect(["ERROR_DETECTED", "DIAGNOSING", "AWAITING_APPROVAL"]).toContain(faultResult.canonicalState);
+    expect(["ERROR_DETECTED", "DIAGNOSING", "AWAITING_APPROVAL", "PATCH_READY"]).toContain(faultResult.canonicalState);
 
     console.log(">>> [Phase 9.2 Browser Test] Step 3: Verifying UI shows active failure & diagnosis progress...");
     // Let async diagnosis and proposal settle
