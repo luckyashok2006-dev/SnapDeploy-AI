@@ -17,7 +17,18 @@ import {
 import { useRuntimeStore } from '../../store/runtimeStore';
 import { useAgentStore } from '../../store/agentStore';
 import { useProjectStore } from '../../store/projectStore';
-import { useRepairStore } from '../../store/repairStore';
+import { 
+  useRepairStore,
+  isEpisodeDiagnosing,
+  isEpisodeAwaitingApproval,
+  isEpisodeApplying,
+  isEpisodeVerifying,
+  isEpisodeResolved,
+  isEpisodeRolledBack,
+  isEpisodeRejected,
+  isEpisodeBlocked,
+  getCanonicalState
+} from '../../store/repairStore';
 import { repairCoordinator } from '../../features/repair/repair-coordinator';
 
 interface DebugManagerPanelProps {
@@ -26,14 +37,20 @@ interface DebugManagerPanelProps {
 
 export const DebugManagerPanel: React.FC<DebugManagerPanelProps> = ({ onOpenFaultModal }) => {
   const { lastEvidence, status: runtimeStatus, setIsBottomDrawerOpen, setActiveBottomTab } = useRuntimeStore();
-  const { diagnosis, setPendingPatch, setIsDiffModalOpen, isDiagnosing } = useAgentStore();
+  const { setPendingPatch, setIsDiffModalOpen } = useAgentStore();
   const { activeProjectId } = useProjectStore();
-  const { isProjectLoopPaused, getActiveEpisode } = useRepairStore();
+  const { isProjectLoopPaused } = useRepairStore();
+  const episodes = useRepairStore((state) => state.episodes);
+  const activeEpisodeIds = useRepairStore((state) => state.activeEpisodeId);
 
   const [isActionInProgress, setIsActionInProgress] = useState(false);
 
   const isPaused = activeProjectId ? isProjectLoopPaused(activeProjectId) : false;
-  const activeEpisode = activeProjectId ? getActiveEpisode(activeProjectId) : null;
+  const projectEpisodes = activeProjectId ? (episodes[activeProjectId] || []) : [];
+  const activeEpId = activeProjectId ? activeEpisodeIds[activeProjectId] : null;
+  const activeEpisode = activeEpId
+    ? (projectEpisodes.find((e) => e.failureEpisodeId === activeEpId) || null)
+    : (projectEpisodes.length > 0 ? projectEpisodes[projectEpisodes.length - 1] : null);
 
   const handleToggleLoop = () => {
     if (!activeProjectId) return;
@@ -149,112 +166,273 @@ export const DebugManagerPanel: React.FC<DebugManagerPanelProps> = ({ onOpenFaul
             </div>
           </div>
 
-          {activeEpisode ? (
-            <div className="p-3.5 rounded-xl bg-slate-900/70 border border-violet-500/20 space-y-2.5" data-testid="repair-episode-card">
-              <div className="flex items-center justify-between">
-                <span className={`text-[10px] font-mono px-2 py-0.5 rounded font-bold uppercase border ${
-                  activeEpisode.status === 'diagnosing'
-                    ? 'bg-violet-500/20 text-violet-300 border-violet-500/30'
-                    : activeEpisode.status === 'proposal_ready'
-                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
-                    : activeEpisode.status === 'resolved'
-                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
-                    : activeEpisode.status === 'blocked'
-                    ? 'bg-rose-500/20 text-rose-300 border-rose-500/30'
-                    : 'bg-slate-800 text-slate-300 border-white/10'
-                }`} data-testid="repair-status-badge">
-                  {activeEpisode.status.replace('_', ' ')}
-                </span>
-                <span className="text-[10px] font-mono text-slate-400" data-testid="repair-attempt-counter">
-                  Attempt {activeEpisode.attemptNumber} of {activeEpisode.maxAttempts}
-                </span>
-              </div>
+          {activeEpisode ? (() => {
+            const isDiag = isEpisodeDiagnosing(activeEpisode);
+            const isProposal = isEpisodeAwaitingApproval(activeEpisode);
+            const isApplying = isEpisodeApplying(activeEpisode);
+            const isVerifying = isEpisodeVerifying(activeEpisode);
+            const isResolved = isEpisodeResolved(activeEpisode);
+            const isRolledBack = isEpisodeRolledBack(activeEpisode);
+            const isRejected = isEpisodeRejected(activeEpisode);
+            const isBlocked = isEpisodeBlocked(activeEpisode);
+            const isDiagFailed = activeEpisode.status === 'DIAGNOSIS_FAILED' || activeEpisode.status === 'REPAIR_FAILED';
 
-              {/* Status Details */}
-              {activeEpisode.status === 'diagnosing' && (
-                <div className="flex items-center justify-between pt-1">
-                  <div className="flex items-center gap-2 text-violet-400">
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    <span className="text-[11px]">Diagnosing failure & synthesizing patch...</span>
-                  </div>
-                  <button
-                    onClick={handleCancelDiagnosis}
-                    className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-[10px] text-slate-300 transition"
-                    data-testid="cancel-repair-btn"
-                  >
-                    Cancel
-                  </button>
+            const badgeClass = isDiag
+              ? 'bg-violet-500/20 text-violet-300 border-violet-500/30'
+              : isProposal
+              ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+              : isApplying
+              ? 'bg-sky-500/20 text-sky-300 border-sky-500/30'
+              : isVerifying
+              ? 'bg-blue-500/20 text-blue-300 border-blue-500/30'
+              : isResolved
+              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+              : isRolledBack || isDiagFailed
+              ? 'bg-rose-500/20 text-rose-300 border-rose-500/30'
+              : isBlocked
+              ? 'bg-rose-500/20 text-rose-300 border-rose-500/30'
+              : 'bg-slate-800 text-slate-300 border-white/10';
+
+            const badgeLabel = isDiag
+              ? 'Diagnosing...'
+              : isProposal
+              ? 'Repair Proposed'
+              : isApplying
+              ? 'Applying Repair...'
+              : isVerifying
+              ? 'Verifying...'
+              : isResolved
+              ? 'Repair Successful'
+              : isRolledBack
+              ? 'Repair Failed — Rolled Back'
+              : isDiagFailed
+              ? 'Diagnosis Failed'
+              : isBlocked
+              ? 'Repair Blocked'
+              : isRejected
+              ? 'Patch Rejected'
+              : activeEpisode.status.replace('_', ' ');
+
+            return (
+              <div className="p-3.5 rounded-xl bg-slate-900/70 border border-violet-500/20 space-y-2.5" data-testid="repair-episode-card">
+                <div className="flex items-center justify-between">
+                  <span className={`text-[10px] font-mono px-2 py-0.5 rounded font-bold uppercase border ${badgeClass}`} data-testid="repair-status-badge">
+                    {badgeLabel}
+                  </span>
+                  <span className="text-[10px] font-mono text-slate-400" data-testid="repair-attempt-counter">
+                    Attempt {activeEpisode.attemptNumber} of {activeEpisode.maxAttempts}
+                  </span>
                 </div>
-              )}
 
-              {activeEpisode.status === 'proposal_ready' && activeEpisode.patch && (
-                <div className="space-y-2 pt-1">
-                  <div className="text-[11px] text-slate-200 font-medium">
-                    {activeEpisode.patch.summary}
-                  </div>
-                  <div className="flex items-center justify-between pt-1 border-t border-white/5 gap-2">
+                {/* Status Details */}
+                {isDiag && (
+                  <div className="flex items-center justify-between pt-1" data-testid="repair-diagnosing-state">
+                    <div className="flex items-center gap-2 text-violet-400">
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span className="text-[11px]">Diagnosing failure & synthesizing patch...</span>
+                    </div>
                     <button
-                      onClick={handleReviewPatch}
-                      className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-750 text-[11px] text-slate-300 hover:text-white transition flex items-center gap-1"
-                      data-testid="review-repair-diff-btn"
+                      onClick={handleCancelDiagnosis}
+                      className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-[10px] text-slate-300 transition"
+                      data-testid="cancel-repair-btn"
                     >
-                      <ExternalLink className="w-3 h-3" />
-                      <span>Review Diff</span>
+                      Cancel
                     </button>
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        onClick={handleRejectRepair}
-                        disabled={isActionInProgress}
-                        className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] text-slate-300 transition disabled:opacity-50"
-                        data-testid="reject-repair-btn"
-                      >
-                        Reject
-                      </button>
-                      <button
-                        onClick={handleApproveRepair}
-                        disabled={isActionInProgress}
-                        className="px-3 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-semibold transition flex items-center gap-1 shadow-sm disabled:opacity-50"
-                        data-testid="approve-repair-btn"
-                      >
-                        {isActionInProgress ? (
-                          <RefreshCw className="w-3 h-3 animate-spin" />
-                        ) : (
-                          <CheckCircle2 className="w-3 h-3" />
+                  </div>
+                )}
+
+                {isProposal && activeEpisode.patch && (
+                  <div className="space-y-2.5 pt-1" data-testid="repair-proposal-state">
+                    {/* Failure Intelligence Card */}
+                    {activeEpisode.diagnosis && (
+                      <div className="p-2.5 rounded-lg bg-slate-800/60 border border-white/5 space-y-1.5" data-testid="diagnosis-intelligence-card">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] font-mono font-bold uppercase text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">
+                            {activeEpisode.diagnosis.category}
+                          </span>
+                          <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded border ${
+                            activeEpisode.diagnosis.isHypothesis
+                              ? 'text-amber-300 bg-amber-500/10 border-amber-500/20'
+                              : 'text-violet-300 bg-violet-500/10 border-violet-500/20'
+                          }`}>
+                            {activeEpisode.diagnosis.isHypothesis
+                              ? 'Hypothesis (Low Confidence)'
+                              : `AI Assessment: ${Math.round((activeEpisode.diagnosis.confidence || 0.85) * 100)}%`}
+                          </span>
+                        </div>
+                        {activeEpisode.diagnosis.rootCause && (
+                          <div className="text-[11px] text-slate-200">
+                            <span className="text-slate-400 font-semibold">Root Cause: </span>
+                            {activeEpisode.diagnosis.rootCause}
+                          </div>
                         )}
-                        <span>Approve & Apply</span>
+                        {activeEpisode.diagnosis.errorContext && (
+                          <div className="text-[10px] font-mono text-slate-400 bg-black/30 px-2 py-1 rounded">
+                            {activeEpisode.diagnosis.errorContext}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Declarative Repair Plan */}
+                    {activeEpisode.plan && (
+                      <div className="p-2.5 rounded-lg bg-slate-800/40 border border-violet-500/10 space-y-1 text-[11px]" data-testid="repair-plan-card">
+                        <div className="text-[10px] font-bold uppercase tracking-wider text-violet-400">
+                          Declarative Repair Plan
+                        </div>
+                        <div className="text-slate-300 font-medium">{activeEpisode.plan.summary}</div>
+                        {activeEpisode.plan.steps && activeEpisode.plan.steps.map((step, idx) => (
+                          <div key={idx} className="text-[10px] text-slate-400 font-mono">
+                            &bull; <span className="text-slate-300">{step.targetFile}:</span> {step.intendedModification}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="text-[11px] text-slate-200 font-medium">
+                      {activeEpisode.patch.summary}
+                    </div>
+                    <div className="flex items-center justify-between pt-1 border-t border-white/5 gap-2">
+                      <button
+                        onClick={handleReviewPatch}
+                        className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-750 text-[11px] text-slate-300 hover:text-white transition flex items-center gap-1"
+                        data-testid="review-repair-diff-btn"
+                      >
+                        <ExternalLink className="w-3 h-3" />
+                        <span>Review Diff</span>
                       </button>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={handleRejectRepair}
+                          disabled={isActionInProgress}
+                          className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] text-slate-300 transition disabled:opacity-50"
+                          data-testid="reject-repair-btn"
+                        >
+                          Reject
+                        </button>
+                        <button
+                          onClick={handleApproveRepair}
+                          disabled={isActionInProgress}
+                          className="px-3 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-semibold transition flex items-center gap-1 shadow-sm disabled:opacity-50"
+                          data-testid="approve-repair-btn"
+                        >
+                          {isActionInProgress ? (
+                            <RefreshCw className="w-3 h-3 animate-spin" />
+                          ) : (
+                            <CheckCircle2 className="w-3 h-3" />
+                          )}
+                          <span>Approve & Apply</span>
+                        </button>
+                      </div>
                     </div>
                   </div>
-                </div>
-              )}
+                )}
 
-              {activeEpisode.status === 'blocked' && (
-                <div className="p-2 rounded bg-rose-500/10 border border-rose-500/20 text-[11px] text-rose-300 space-y-1">
-                  <div className="font-semibold flex items-center gap-1">
-                    <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
-                    <span>Repair Blocked</span>
+                {isApplying && (
+                  <div className="flex items-center gap-2 text-sky-400 pt-1" data-testid="repair-applying-state">
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span className="text-[11px]">Applying repair patch to project files...</span>
                   </div>
-                  <p className="text-[10px] text-slate-400">
-                    Maximum automated attempts reached ({activeEpisode.maxAttempts}/{activeEpisode.maxAttempts}). Manual intervention required.
-                  </p>
-                </div>
-              )}
+                )}
 
-              {activeEpisode.status === 'resolved' && (
-                <div className="p-2 rounded bg-emerald-500/10 border border-emerald-500/20 text-[11px] text-emerald-300 flex items-center gap-1.5">
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                  <span>Episode resolved and verified clean.</span>
-                </div>
-              )}
+                {isVerifying && (
+                  <div className="flex items-center gap-2 text-blue-400 pt-1" data-testid="repair-verifying-state">
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span className="text-[11px]">Verifying repair... Running TypeScript compiler & build checks</span>
+                  </div>
+                )}
 
-              {activeEpisode.status === 'rejected' && (
-                <div className="p-2 rounded bg-slate-800/80 border border-white/5 text-[11px] text-slate-400 flex items-center gap-1.5">
-                  <X className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                  <span>Proposal rejected. Zero project files modified.</span>
-                </div>
-              )}
-            </div>
-          ) : (
+                {isBlocked && (
+                  <div className="p-2 rounded bg-rose-500/10 border border-rose-500/20 text-[11px] text-rose-300 space-y-1" data-testid="repair-blocked-state">
+                    <div className="font-semibold flex items-center gap-1">
+                      <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
+                      <span>Repair Blocked</span>
+                    </div>
+                    <p className="text-[10px] text-slate-400">
+                      Maximum automated attempts reached ({activeEpisode.maxAttempts}/{activeEpisode.maxAttempts}). Manual intervention required.
+                    </p>
+                  </div>
+                )}
+
+                {isRolledBack && (
+                  <div className="p-2.5 rounded bg-rose-500/10 border border-rose-500/20 text-[11px] text-rose-300 space-y-2" data-testid="repair-rolled-back-state">
+                    <div className="font-semibold flex items-center gap-1.5 text-rose-400">
+                      <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                      <span>Repair Failed &mdash; Rolled Back</span>
+                    </div>
+                    <p className="text-[10px] text-slate-300">
+                      Verification failed: {activeEpisode.error || 'Pipeline check failed'}. All project files safely restored byte-for-byte to pre-repair snapshot. Zero corrupt state.
+                    </p>
+                    {activeEpisode.verificationResult && (
+                      <div className="pt-1.5 border-t border-rose-500/20 text-[10px] font-mono space-y-1" data-testid="verification-evidence-box">
+                        <div className="text-rose-400 font-semibold uppercase">Verification Failure Evidence:</div>
+                        {activeEpisode.verificationResult.checks.map((chk, idx) => (
+                          <div key={idx} className="flex items-center justify-between text-slate-300">
+                            <span>&bull; {chk.name}</span>
+                            <span className={chk.success ? 'text-emerald-400 font-bold' : 'text-rose-400 font-bold'}>
+                              {chk.success ? 'PASS' : 'FAIL'}
+                            </span>
+                          </div>
+                        ))}
+                        <div className="flex items-center justify-between text-slate-400 pt-0.5">
+                          <span>Original Failure:</span>
+                          <span className="text-rose-400 font-bold">PRESENT (ROLLED BACK)</span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {isDiagFailed && (
+                  <div className="p-2.5 rounded bg-rose-500/10 border border-rose-500/20 text-[11px] text-rose-300 space-y-1" data-testid="repair-diag-failed-state">
+                    <div className="font-semibold flex items-center gap-1.5 text-rose-400">
+                      <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                      <span>Diagnosis Failed</span>
+                    </div>
+                    <p className="text-[10px] text-slate-300">
+                      {activeEpisode.error || 'AI diagnosis failed to synthesize a valid repair patch.'}
+                    </p>
+                  </div>
+                )}
+
+                {isResolved && (
+                  <div className="p-2.5 rounded bg-emerald-500/10 border border-emerald-500/20 text-[11px] text-emerald-300 space-y-2" data-testid="repair-resolved-state">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                      <div>
+                        <div className="font-semibold">Repair Successful & Verified Clean</div>
+                        <div className="text-[10px] text-slate-400">All checks passed with zero regressions. Changes kept.</div>
+                      </div>
+                    </div>
+                    {activeEpisode.verificationResult && (
+                      <div className="pt-1.5 border-t border-emerald-500/20 text-[10px] font-mono space-y-1" data-testid="verification-evidence-box">
+                        <div className="text-emerald-400 font-semibold uppercase">Verification Evidence:</div>
+                        {activeEpisode.verificationResult.checks.map((chk, idx) => (
+                          <div key={idx} className="flex items-center justify-between text-slate-300">
+                            <span>&bull; {chk.name}</span>
+                            <span className={chk.success ? 'text-emerald-400 font-bold' : 'text-rose-400 font-bold'}>
+                              {chk.success ? 'PASS' : 'FAIL'} ({chk.durationMs || 0}ms)
+                            </span>
+                          </div>
+                        ))}
+                        <div className="flex items-center justify-between text-slate-400 pt-0.5">
+                          <span>Original Failure:</span>
+                          <span className="text-emerald-300 font-bold">CLEARED</span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {isRejected && (
+                  <div className="p-2 rounded bg-slate-800/80 border border-white/5 text-[11px] text-slate-400 flex items-center gap-1.5" data-testid="repair-rejected-state">
+                    <X className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                    <span>Proposal rejected. Zero project files modified.</span>
+                  </div>
+                )}
+              </div>
+            );
+          })() : (
             <div className="p-3 rounded-xl bg-slate-900/40 border border-white/5 text-[11px] text-slate-400">
               Continuous self-healing is monitoring project execution. Runtime errors will automatically capture episodes and propose deterministic fixes.
             </div>

@@ -31,6 +31,7 @@ export interface RuntimeStoreState {
 
   // Actions
   recordEvidence: (evidence: ExecutionEvidence, projectId?: string | null) => void;
+  clearEvidence: (projectId?: string | null) => void;
   bootRuntime: () => Promise<void>;
   initializeProject: (projectId: string) => Promise<void>;
   mountAndStartProject: (projectId: string) => Promise<void>;
@@ -263,6 +264,28 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
           console.warn('[RuntimeStore] Automated repair trigger error:', err);
         });
       }
+    },
+
+    clearEvidence: (projectId) => {
+      const activeId = getActiveProjectId();
+      const targetProjectId = projectId || activeId;
+      set((state) => {
+        const updatedEvidenceByProject = { ...state.evidenceByProject };
+        if (targetProjectId) {
+          delete updatedEvidenceByProject[targetProjectId];
+        }
+        const isTargetMatch =
+          !state.lastEvidence ||
+          !state.lastEvidence.projectId ||
+          state.lastEvidence.projectId === targetProjectId ||
+          targetProjectId === activeId;
+
+        return {
+          evidenceByProject: updatedEvidenceByProject,
+          lastEvidence: isTargetMatch ? null : state.lastEvidence,
+          ...(isTargetMatch && state.status === 'error' ? { status: 'ready' as const } : {})
+        };
+      });
     },
 
     executeCommand: async (command, args = [], options) => {

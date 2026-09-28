@@ -752,7 +752,7 @@ app.post('/api/generate', aiRateLimiter, async (req, res) => {
 app.post('/api/diagnose', aiRateLimiter, async (req, res) => {
   const requestId = (req as any)?.id || res?.locals?.requestId || (req as any)?.requestId;
   try {
-    const { evidence, relevantFiles, userRequirement } = req.body || {};
+    const { evidence, relevantFiles, userRequirement, projectId } = req.body || {};
 
     if (!evidence || typeof evidence !== 'object' || !evidence.command) {
       res.status(400).json({ code: 'INVALID_EVIDENCE', error: 'Diagnostic evidence must include a valid command string.' });
@@ -783,10 +783,11 @@ app.post('/api/diagnose', aiRateLimiter, async (req, res) => {
 
     logger.info('Received diagnostic request', {
       requestId,
+      projectId,
       fileCount: fileEntries.length,
       command: evidence.command
     });
-    const diagnosis = await diagnosticService.diagnose({ evidence, relevantFiles, userRequirement, requestId });
+    const diagnosis = await diagnosticService.diagnose({ evidence, relevantFiles, userRequirement, requestId, projectId });
     res.json(diagnosis);
   } catch (err: any) {
     logger.error('Diagnostic request failed', {
@@ -806,7 +807,7 @@ app.post('/api/diagnose', aiRateLimiter, async (req, res) => {
 app.post('/api/repair', aiRateLimiter, async (req, res) => {
   const requestId = (req as any)?.id || res?.locals?.requestId || (req as any)?.requestId;
   try {
-    const { diagnosis, evidence, relevantFiles, originalRequirement } = req.body || {};
+    const { diagnosis, plan, evidence, relevantFiles, originalRequirement, projectId } = req.body || {};
 
     if (!diagnosis || typeof diagnosis !== 'object' || !diagnosis.category) {
       res.status(400).json({ code: 'INVALID_DIAGNOSIS', error: 'Repair requires a structured diagnosis object.' });
@@ -837,10 +838,11 @@ app.post('/api/repair', aiRateLimiter, async (req, res) => {
 
     logger.info('Received repair request', {
       requestId,
+      projectId,
       diagnosisCategory: diagnosis.category,
       fileCount: fileEntries.length
     });
-    const patch = await repairService.generatePatch({ diagnosis, evidence, relevantFiles, originalRequirement, requestId });
+    const patch = await repairService.generatePatch({ diagnosis, plan, evidence, relevantFiles, originalRequirement, requestId, projectId });
     res.json(patch);
   } catch (err: any) {
     logger.error('Repair request failed', {

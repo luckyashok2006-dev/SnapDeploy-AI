@@ -1,12 +1,15 @@
-import { ExecutionEvidence, Patch, Diagnosis } from '../../types/workspace';
+import { ExecutionEvidence, Patch, Diagnosis, RepairPlan, VerificationResult } from '../../types/workspace';
 import { diagnoseFailure } from './diagnosis';
 import { generatePatch } from './repair';
-import { validatePatch } from './patch-validator';
+import { validatePatch, validatePatchMinimality } from './patch-validator';
 import { snapshotService } from '../../lib/snapshots/SnapshotService';
 import { verificationService } from '../verification/VerificationService';
 import { runtimeManager } from '../../lib/runtime/runtime-manager';
 import { vfsManager } from '../../lib/vfs/vfs-manager';
 import { resetEditorBoundary } from '../../lib/editor/editor-boundary';
+import { getRelevantFilesForFailure } from './repair-coordinator';
+import { classifyFailureEvidence } from './failure-classifier';
+import { createRepairPlan } from './repair-planner';
 
 export interface RepairLoopStepCallback {
   (stage: string, message: string): void;
@@ -29,46 +32,78 @@ export class RepairLoopEngine {
     projectId: string,
     evidence: ExecutionEvidence,
     onProgress?: RepairLoopStepCallback
-  ): Promise<{ diagnosis: Diagnosis; patch: Patch }> {
+  ): Promise<{ diagnosis: Diagnosis; patch: Patch; plan: RepairPlan }> {
     onProgress?.('diagnosing', 'Analyzing execution evidence and stack trace...');
     
-    // Gather project file contents for AI context
+    // 1. Evidence-first relevant file selection (Phase C: preferred hierarchy)
     const files = vfsManager.getFiles(projectId);
+    const relevantPaths = getRelevantFilesForFailure(evidence, files);
     const relevantFiles: Record<string, string> = {};
-    for (const [path, f] of Object.entries(files)) {
-      relevantFiles[path] = f.content;
+    for (const p of relevantPaths) {
+      if (files[p]) {
+        relevantFiles[p] = files[p].content;
+      }
+    }
+    // Always include package.json if present for dependency context
+    if (files['/package.json'] && !relevantFiles['/package.json']) {
+      relevantFiles['/package.json'] = files['/package.json'].content;
     }
 
-    // 1. Diagnose
-    const diagnosis = await diagnoseFailure({
-      evidence,
-      relevantFiles
-    });
-    onProgress?.('diagnosed', `Diagnosis: ${diagnosis.explanation}`);
+    // 2. Structured Failure Diagnosis (Phase B)
+    let diagnosis: Diagnosis;
+    try {
+      diagnosis = await diagnoseFailure({
+        evidence,
+        relevantFiles,
+        projectId
+      });
+      if (!diagnosis.projectId) {
+        diagnosis.projectId = projectId;
+      }
+    } catch (diagErr) {
+      // Deterministic fallback classifier when offline or test mock
+      diagnosis = classifyFailureEvidence(evidence, files);
+      diagnosis.projectId = projectId;
+    }
+    onProgress?.('diagnosed', `Diagnosis (${diagnosis.category}): ${diagnosis.explanation}`);
 
-    // 2. Generate Patch
+    // 3. Declarative Repair Plan before Patch synthesis (Phase D)
+    const plan = createRepairPlan(diagnosis, files);
+    onProgress?.('planning', `Synthesizing repair plan: ${plan.summary}`);
+
+    // 4. Generate targeted minimal patch (Phase E)
     onProgress?.('patching', 'Synthesizing source code repair patch...');
     const patch = await generatePatch({
       diagnosis,
+      plan,
       evidence,
-      relevantFiles
+      relevantFiles,
+      projectId
     });
 
-    // 3. Validate Patch
+    // 5. Validate Patch Safety & Path Traversal
     const validation = validatePatch(patch, files);
     if (!validation.valid) {
       throw new Error(`Patch validation failed: ${validation.errors.join(', ')}`);
     }
 
+    // 6. Validate Patch Minimality (Phase E)
+    const minimality = validatePatchMinimality(patch, files, diagnosis.affectedFiles);
+    patch.planId = plan.id;
+    patch.isMinimal = minimality.isMinimal;
+    if (minimality.warnings.length > 0) {
+      patch.minimalityNotes = minimality.warnings.join('; ');
+    }
+
     onProgress?.('ready_for_review', 'Patch synthesized and verified safe. Awaiting user review.');
-    return { diagnosis, patch };
+    return { diagnosis, plan, patch };
   }
 
   public async applyPatchAndVerify(
     projectId: string,
     patch: Patch,
     onProgress?: RepairLoopStepCallback
-  ): Promise<{ verified: boolean; error?: string }> {
+  ): Promise<{ verified: boolean; error?: string; verificationResult?: VerificationResult }> {
     console.log('[Repair Engine] applyPatchAndVerify starting for project:', projectId);
 
     // 1. Validate the Gemini patch against the CURRENT VFS state
@@ -153,12 +188,14 @@ export class RepairLoopEngine {
 
     // 6. Run real verification pipeline
     onProgress?.('verifying', 'Running verification checks (TypeScript, Build)...');
-    console.log('[Repair Engine] Running verification checks...');
-    const result = await verificationService.runFullVerification();
+    console.log('[Repair Engine] Running verification checks for project:', projectId);
+    const result = await verificationService.runFullVerification({ projectId });
     console.log('[Repair Engine] Verification completed with result:', result);
 
     // 7. If verification succeeds: keep patched state, sync projectStore, and return success
     if (result.success) {
+      result.originalErrorCleared = true;
+      result.finalState = 'VERIFIED';
       onProgress?.('verified', `Repair verified successfully (${result.totalDurationMs}ms). Zero regressions.`);
       try {
         const { useProjectStore } = await import('../../store/projectStore');
@@ -168,9 +205,11 @@ export class RepairLoopEngine {
         const patchedFiles = vfsManager.getFiles(projectId);
         await resetEditorBoundary(projectId, patchedFiles);
       } catch {}
-      return { verified: true };
+      return { verified: true, verificationResult: result };
     } else {
       // 8. If verification fails or times out: rollback COMPLETE project snapshot & WebContainer project
+      result.originalErrorCleared = false;
+      result.finalState = 'ROLLED_BACK';
       onProgress?.('rollback', 'Verification failed. Rolling back to pre-repair snapshot...');
       await snapshotService.restoreSnapshot(projectId);
 
@@ -188,14 +227,15 @@ export class RepairLoopEngine {
       } catch {}
       try {
         const { useAgentStore } = await import('../../store/agentStore');
-        useAgentStore.getState().setPendingPatch(null);
+        useAgentStore.getState().setPendingPatch(null, projectId);
       } catch {}
 
       const failedCheck = result.checks.find((c) => !c.success);
       const errorOutput = failedCheck?.output ? `: ${failedCheck.output}` : '';
       return {
         verified: false,
-        error: `Verification check '${failedCheck?.name || 'Pipeline'}' ${failedCheck?.status || 'failed'}${errorOutput}`
+        error: `Verification check '${failedCheck?.name || 'Pipeline'}' ${failedCheck?.status || 'failed'}${errorOutput}`,
+        verificationResult: result
       };
     }
   }

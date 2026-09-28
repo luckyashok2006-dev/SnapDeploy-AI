@@ -65,23 +65,68 @@ export interface ExecutionEvidence {
   durationMs: number;
   stackTrace?: string;
   timedOut?: boolean;
+  projectId?: string;
+  affectedPath?: string;
+  errorContext?: string;
+  requestId?: string;
 }
 
 export type DiagnosisCategory =
+  | 'SYNTAX'
+  | 'TYPE'
+  | 'RUNTIME'
+  | 'DEPENDENCY'
+  | 'BUILD'
+  | 'CONFIGURATION'
+  | 'UNKNOWN'
   | 'syntax'
   | 'type'
   | 'dependency'
   | 'runtime'
   | 'test'
-  | 'configuration';
+  | 'configuration'
+  | 'unknown';
+
+export interface RecommendedRepair {
+  approach: string;
+  targetFiles: string[];
+  rationale: string;
+}
 
 export interface Diagnosis {
   category: DiagnosisCategory;
   severity: 'low' | 'medium' | 'high';
+  projectId?: string;
   explanation: string;
+  rootCause?: string;
   affectedFiles: string[];
+  affectedPath?: string;
   evidence: string[];
+  evidenceSummary?: string;
   suggestedFix: string;
+  confidence?: number;
+  confidenceReason?: string;
+  recommendedRepair?: RecommendedRepair;
+  expectedVerification?: string[];
+  errorContext?: string;
+  isHypothesis?: boolean;
+}
+
+export interface RepairPlanStep {
+  targetFile: string;
+  intendedModification: string;
+  reason: string;
+  expectedOutcome: string;
+}
+
+export interface RepairPlan {
+  id: string;
+  projectId?: string;
+  summary: string;
+  steps: RepairPlanStep[];
+  expectedOutcome: string;
+  verificationPlan: string[];
+  createdAt: string;
 }
 
 export interface PatchFileChange {
@@ -95,6 +140,9 @@ export interface Patch {
   summary: string;
   files: PatchFileChange[];
   confidence?: number;
+  planId?: string;
+  isMinimal?: boolean;
+  minimalityNotes?: string;
 }
 
 export interface VerificationCheck {
@@ -113,6 +161,8 @@ export interface VerificationResult {
   checks: VerificationCheck[];
   totalDurationMs: number;
   summary?: string;
+  originalErrorCleared?: boolean;
+  finalState?: 'VERIFIED' | 'ROLLED_BACK';
 }
 
 export interface ProjectPlanFile {
@@ -147,13 +197,18 @@ export interface DiagnosticInput {
   evidence: ExecutionEvidence;
   relevantFiles: Record<string, string>;
   userRequirement?: string;
+  requestId?: string;
+  projectId?: string;
 }
 
 export interface RepairInput {
   diagnosis: Diagnosis;
+  plan?: RepairPlan;
   evidence: ExecutionEvidence;
   relevantFiles: Record<string, string>;
   originalRequirement?: string;
+  requestId?: string;
+  projectId?: string;
 }
 
 export interface EditInput {
@@ -194,6 +249,24 @@ export interface EditProposal {
 }
 
 export type RepairEpisodeStatus =
+  // Canonical explicit lifecycle (Phase B)
+  | 'IDLE'
+  | 'ERROR_DETECTED'
+  | 'DIAGNOSING'
+  | 'DIAGNOSIS_READY'
+  | 'REPAIRING'
+  | 'PATCH_READY'
+  | 'AWAITING_APPROVAL'
+  | 'APPLYING'
+  | 'VERIFYING'
+  | 'REPAIRED'
+  // Explicit failure branches
+  | 'DIAGNOSIS_FAILED'
+  | 'REPAIR_FAILED'
+  | 'PATCH_REJECTED'
+  | 'VERIFICATION_FAILED'
+  | 'ROLLED_BACK'
+  // Legacy / alias compatibility
   | 'captured'
   | 'diagnosing'
   | 'proposal_ready'
@@ -207,6 +280,23 @@ export type RepairEpisodeStatus =
   | 'paused'
   | 'cancelled';
 
+export type CanonicalRepairState =
+  | 'IDLE'
+  | 'ERROR_DETECTED'
+  | 'DIAGNOSING'
+  | 'DIAGNOSIS_READY'
+  | 'REPAIRING'
+  | 'PATCH_READY'
+  | 'AWAITING_APPROVAL'
+  | 'APPLYING'
+  | 'VERIFYING'
+  | 'REPAIRED'
+  | 'DIAGNOSIS_FAILED'
+  | 'REPAIR_FAILED'
+  | 'PATCH_REJECTED'
+  | 'VERIFICATION_FAILED'
+  | 'ROLLED_BACK';
+
 export interface RepairEpisode {
   failureEpisodeId: string;
   projectId: string;
@@ -216,9 +306,12 @@ export interface RepairEpisode {
   evidenceFingerprint: string;
   proposalFingerprint?: string;
   status: RepairEpisodeStatus;
+  canonicalState?: CanonicalRepairState;
   evidence: ExecutionEvidence;
   diagnosis?: Diagnosis | null;
+  plan?: RepairPlan | null;
   patch?: Patch | null;
+  verificationResult?: VerificationResult | null;
   createdAt: string;
   lastAttemptAt: string;
   error?: string | null;

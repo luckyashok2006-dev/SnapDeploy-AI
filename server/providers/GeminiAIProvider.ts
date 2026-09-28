@@ -1147,21 +1147,29 @@ npm run build
     const startTime = Date.now();
     const execId = `exec_diag_${Date.now()}`;
 
-    const { evidence, relevantFiles, userRequirement } = input;
+    const { evidence, relevantFiles, userRequirement, projectId } = input;
     const combinedOutput = `${evidence.stdout}\n${evidence.stderr}\n${evidence.stackTrace || ''}`.trim();
 
     const systemInstruction = `You are the diagnostic reasoning engine for SnapDeploy AI.
 Analyze the provided execution evidence, error output, and source code.
 Distinguish observed facts from inference. Do not invent stack traces or nonexistent files.
 
+PRIMARY PRINCIPLE: Never claim certainty when evidence is incomplete.
+If logs are empty or ambiguous:
+- Category MUST be UNKNOWN
+- isHypothesis MUST be true
+- Confidence MUST be lower (< 0.5)
+- Explanation MUST state that evidence is insufficient.
+
 Return ONLY a structured JSON diagnosis matching the requested schema.`;
 
-    const prompt = `User Requirement: ${userRequirement || 'Vite React Web Application'}
+    const prompt = `Project ID: ${projectId || 'default'}
+User Requirement: ${userRequirement || 'Vite React Web Application'}
 Execution Command: ${evidence.command} ${evidence.args.join(' ')}
 Exit Code: ${evidence.exitCode}
 Error Output / Stderr:
 """
-${combinedOutput || 'Process exited with error code'}
+${combinedOutput || 'Process exited with error code without output stream'}
 """
 
 Source Code Files:
@@ -1180,14 +1188,14 @@ ${Object.entries(relevantFiles).map(([path, code]) => `File: ${path}\n\`\`\`tsx\
             properties: {
               category: {
                 type: 'string',
-                enum: ['syntax', 'type', 'dependency', 'runtime', 'test', 'configuration']
+                enum: ['SYNTAX', 'TYPE', 'RUNTIME', 'DEPENDENCY', 'BUILD', 'CONFIGURATION', 'UNKNOWN']
               },
               severity: {
                 type: 'string',
                 enum: ['low', 'medium', 'high']
               },
-              explanation: { type: 'string' },
               rootCause: { type: 'string' },
+              explanation: { type: 'string' },
               affectedFiles: {
                 type: 'array',
                 items: { type: 'string' }
@@ -1196,9 +1204,17 @@ ${Object.entries(relevantFiles).map(([path, code]) => `File: ${path}\n\`\`\`tsx\
                 type: 'array',
                 items: { type: 'string' }
               },
-              suggestedFix: { type: 'string' }
+              evidenceSummary: { type: 'string' },
+              suggestedFix: { type: 'string' },
+              confidence: { type: 'number' },
+              confidenceReason: { type: 'string' },
+              isHypothesis: { type: 'boolean' },
+              expectedVerification: {
+                type: 'array',
+                items: { type: 'string' }
+              }
             },
-            required: ['category', 'severity', 'explanation', 'affectedFiles', 'evidence', 'suggestedFix']
+            required: ['category', 'severity', 'rootCause', 'explanation', 'affectedFiles', 'evidence', 'suggestedFix']
           }
         }
       }), 2, 90_000, { requestId: input.requestId, operation: 'diagnose' });
@@ -1214,13 +1230,33 @@ ${Object.entries(relevantFiles).map(([path, code]) => `File: ${path}\n\`\`\`tsx\
       const normalizedAffectedFiles = (parsed.affectedFiles && parsed.affectedFiles.length > 0 ? parsed.affectedFiles : Object.keys(relevantFiles))
         .map((p: string) => p.startsWith('/') ? p : '/' + p);
 
+      const hasEmptyLogs = !combinedOutput || combinedOutput.length < 5;
+      const category = hasEmptyLogs ? 'UNKNOWN' : (parsed.category || 'RUNTIME');
+      const isHypothesis = hasEmptyLogs || Boolean(parsed.isHypothesis);
+      const confidence = hasEmptyLogs ? 0.35 : (typeof parsed.confidence === 'number' ? Math.min(0.92, parsed.confidence) : 0.85);
+
       const diagnosis: Diagnosis = {
-        category: parsed.category || 'runtime',
+        category,
         severity: parsed.severity || 'medium',
-        explanation: parsed.explanation || 'An execution error occurred in the project.',
+        projectId,
+        explanation: hasEmptyLogs
+          ? 'Process terminated with non-zero exit code but emitted no diagnostic error stream. Root cause is unverified hypothesis.'
+          : (parsed.explanation || 'An execution error occurred in the project.'),
+        rootCause: parsed.rootCause || parsed.explanation || 'Unresolved execution fault',
         affectedFiles: normalizedAffectedFiles,
+        affectedPath: normalizedAffectedFiles[0],
         evidence: parsed.evidence && parsed.evidence.length > 0 ? parsed.evidence : [combinedOutput.slice(0, 300)],
-        suggestedFix: parsed.suggestedFix || 'Review error logs and apply suggested fix.'
+        evidenceSummary: parsed.evidenceSummary || combinedOutput.slice(0, 200),
+        suggestedFix: parsed.suggestedFix || 'Review error logs and apply suggested fix.',
+        confidence,
+        confidenceReason: parsed.confidenceReason || (hasEmptyLogs ? 'Insufficient diagnostic logs' : 'Extracted from error output'),
+        isHypothesis,
+        recommendedRepair: {
+          approach: parsed.suggestedFix || 'Surgical code repair',
+          targetFiles: normalizedAffectedFiles,
+          rationale: parsed.rootCause || 'Removes error condition'
+        },
+        expectedVerification: parsed.expectedVerification || ['TypeScript Compilation', 'Production Build']
       };
 
       this.recordExecution({
@@ -1282,26 +1318,36 @@ ${Object.entries(relevantFiles).map(([path, code]) => `File: ${path}\n\`\`\`tsx\
     const startTime = Date.now();
     const execId = `exec_patch_${Date.now()}`;
 
-    const { diagnosis, evidence, relevantFiles, originalRequirement } = input;
+    const { diagnosis, plan, evidence, relevantFiles, originalRequirement, projectId } = input;
 
     const systemInstruction = `You are the code repair engine for SnapDeploy AI.
 Generate a targeted, minimal, safe code repair patch to resolve the diagnosed issue.
 
 CONSTRAINTS:
-1. Never modify files that are not necessary for the fix.
-2. Do not rewrite the entire project unless absolutely required.
-3. Preserve existing behavior and unrelated existing code.
-4. Generate a targeted repair.
+1. Follow the repair plan strictly. Only modify files identified in the repair plan.
+2. Repairs must be minimal and surgical. Change only the specific lines, imports, or tokens necessary to resolve the failure.
+3. Never modify unrelated files or rewrite entire components when fixing a localized error.
+4. Preserve existing behavior and all unrelated existing code.
 5. Return ONLY path and the complete repaired "after" content for each modified file.
 6. Do NOT return "before" content (authoritative baseline content is paired automatically).
 7. Return ONLY valid JSON matching the requested schema.`;
 
-    const prompt = `Original Requirement: ${originalRequirement || 'Vite React Web Application'}
+    const planSection = plan ? `
+Repair Plan:
+- Summary: ${plan.summary}
+- Steps:
+${plan.steps.map((s: any) => `  * Target: ${s.targetFile} | Modification: ${s.intendedModification} | Reason: ${s.reason}`).join('\n')}
+- Expected Outcome: ${plan.expectedOutcome}
+` : '';
+
+    const prompt = `Project ID: ${projectId || 'default'}
+Original Requirement: ${originalRequirement || 'Vite React Web Application'}
 Diagnosis Category: ${diagnosis.category}
 Diagnosis Explanation: ${diagnosis.explanation}
+Root Cause: ${diagnosis.rootCause || diagnosis.explanation}
 Suggested Fix: ${diagnosis.suggestedFix}
 Affected Files: ${diagnosis.affectedFiles.join(', ')}
-
+${planSection}
 Current Source Files:
 ${Object.entries(relevantFiles).map(([path, code]) => `=== FILE: ${path} ===\n${code}\n=== END FILE ===`).join('\n\n')}`;
 
@@ -1385,11 +1431,16 @@ ${Object.entries(relevantFiles).map(([path, code]) => `=== FILE: ${path} ===\n${
         };
       });
 
+      const estimatedConfidence = typeof parsed.confidence === 'number'
+        ? Math.min(0.90, parsed.confidence)
+        : (diagnosis.confidence || 0.85);
+
       const patch: Patch = {
         id: `patch_gemini_${Date.now()}`,
         summary: parsed.summary || `Fix for ${diagnosis.category} issue`,
         files: patchFiles,
-        confidence: parsed.confidence || 0.95
+        confidence: estimatedConfidence,
+        planId: plan?.id
       };
 
       this.recordExecution({

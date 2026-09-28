@@ -1,12 +1,16 @@
-import { ExecutionEvidence, RepairEpisode, Diagnosis, Patch } from '../../types/workspace';
+import { ExecutionEvidence, RepairEpisode, Diagnosis, Patch, RepairPlan, VerificationResult } from '../../types/workspace';
 import { useRepairStore } from '../../store/repairStore';
 import { useAgentStore } from '../../store/agentStore';
 import { useProjectStore } from '../../store/projectStore';
 import { repairLoopEngine } from './repair-loop';
 import { vfsManager } from '../../lib/vfs/vfs-manager';
 import { isEligibleForAutoRepair } from './repair-policy';
+import { classifyFailureEvidence } from './failure-classifier';
+import { createRepairPlan } from './repair-planner';
 
 export { isEligibleForAutoRepair } from './repair-policy';
+export { classifyFailureEvidence } from './failure-classifier';
+export { createRepairPlan } from './repair-planner';
 
 /**
  * Sanitizes runtime execution evidence before it can enter AI context or telemetry.
@@ -16,6 +20,8 @@ export function sanitizeExecutionEvidence(evidence: ExecutionEvidence): Executio
   const sanitizeText = (text?: string | null): string => {
     if (!text) return '';
     return text
+      .replace(/AIza[0-9A-Za-z-_]{30,40}/g, '[REDACTED_GEMINI_KEY]')
+      .replace(/(?:sk-[a-zA-Z0-9]{20,}|AKIA[0-9A-Z]{16})/g, '[REDACTED_API_KEY]')
       .replace(/ghp_[a-zA-Z0-9]+/g, '[REDACTED_GITHUB_TOKEN]')
       .replace(/github_pat_[a-zA-Z0-9_]+/g, '[REDACTED_GITHUB_TOKEN]')
       .replace(/Bearer\s+[a-zA-Z0-9_.-]+/gi, 'Bearer [REDACTED]')
@@ -32,7 +38,8 @@ export function sanitizeExecutionEvidence(evidence: ExecutionEvidence): Executio
     command: sanitizeText(evidence.command),
     stdout: sanitizeText(evidence.stdout),
     stderr: sanitizeText(evidence.stderr),
-    stackTrace: evidence.stackTrace ? sanitizeText(evidence.stackTrace) : undefined
+    stackTrace: evidence.stackTrace ? sanitizeText(evidence.stackTrace) : undefined,
+    errorContext: evidence.errorContext ? sanitizeText(evidence.errorContext) : undefined
   };
 }
 
@@ -58,7 +65,14 @@ export function computeFailureFingerprint(
 }
 
 /**
- * Detects files relevant to the failure from logs, stack traces, and project files.
+ * Detects files relevant to the failure using the Phase C evidence-first hierarchy:
+ * 1. Exact compiler/runtime diagnostic path with line:col
+ * 2. Stack-trace referenced file
+ * 3. Direct import/dependency relationship
+ * 4. Related configuration file
+ * 5. Project entry file
+ * 6. Broader project context only when necessary
+ * All returned paths are guaranteed to exist in the target project VFS.
  */
 export function getRelevantFilesForFailure(
   evidence: ExecutionEvidence,
@@ -67,18 +81,34 @@ export function getRelevantFilesForFailure(
   const logs = `${evidence.stderr}\n${evidence.stdout}\n${evidence.stackTrace || ''}`;
   const foundPaths = new Set<string>();
 
-  // Extract path mentions like src/App.tsx, ./src/utils.ts, etc.
+  // 1. Diagnostic path with line:col (e.g. src/App.tsx:14:5 or /src/App.tsx(14,5))
+  const locMatches = logs.match(/(?:(?:\/)?([a-zA-Z0-9_\-./]+\.[a-zA-Z0-9]+))[:\(](\d+)[:,\s](\d+)\)?/g) || [];
+  for (const match of locMatches) {
+    const clean = match.replace(/[:\(].*$/, '').replace(/\\/g, '/').replace(/^.*?(src\/)/, 'src/');
+    const candidates = [clean, `/${clean}`, clean.startsWith('/') ? clean.slice(1) : `/${clean}`];
+    for (const c of candidates) {
+      if (files[c]) foundPaths.add(c.startsWith('/') ? c : `/${c}`);
+    }
+  }
+
+  // 2. Stack trace references (e.g. at ... (/path/file.tsx:12:3) or at App (src/App.tsx:24:1))
+  const stackMatches = logs.match(/at\s+.*?\((?:.*?\/)?(src\/[a-zA-Z0-9_\-./]+\.[a-zA-Z0-9]+):\d+:\d+\)/g) || [];
+  for (const match of stackMatches) {
+    const fileExtract = match.match(/(src\/[a-zA-Z0-9_\-./]+\.[a-zA-Z0-9]+)/);
+    if (fileExtract) {
+      const clean = fileExtract[1];
+      const candidates = [clean, `/${clean}`, clean.startsWith('/') ? clean.slice(1) : `/${clean}`];
+      for (const c of candidates) {
+        if (files[c]) foundPaths.add(c.startsWith('/') ? c : `/${c}`);
+      }
+    }
+  }
+
+  // 3. General file path mentions in error text (e.g. src/components/Card.tsx)
   const pathMatches = logs.match(/(?:[a-zA-Z0-9_\-./\\]+\.(?:tsx|ts|jsx|js|css|json|html|mjs|cjs))/gi) || [];
-  
-  const fileKeys = Object.keys(files);
   for (const rawMatch of pathMatches) {
     const clean = rawMatch.replace(/\\/g, '/').replace(/^.*?(src\/)/, 'src/');
-    const candidates = [
-      clean,
-      `/${clean}`,
-      clean.startsWith('/') ? clean.slice(1) : `/${clean}`,
-      clean.replace(/^\.?\//, '')
-    ];
+    const candidates = [clean, `/${clean}`, clean.startsWith('/') ? clean.slice(1) : `/${clean}`];
     for (const cand of candidates) {
       if (files[cand]) {
         foundPaths.add(cand.startsWith('/') ? cand : `/${cand}`);
@@ -86,24 +116,52 @@ export function getRelevantFilesForFailure(
     }
   }
 
-  if (foundPaths.size > 0) {
-    return Array.from(foundPaths).sort();
+  // 4. Import / dependency relationship search
+  const unresolvedMatch = logs.match(/(?:Cannot find module|Could not resolve|Failed to resolve import|Cannot find name)\s+['"]([^'"]+)['"]/i);
+  if (unresolvedMatch) {
+    const term = unresolvedMatch[1];
+    for (const [path, f] of Object.entries(files)) {
+      if (f.content.includes(term) && !path.includes('node_modules')) {
+        foundPaths.add(path.startsWith('/') ? path : `/${path}`);
+      }
+    }
   }
 
-  // Fallback to primary application entry files if present
+  // 5. Relevant configuration files based on failure nature
+  if (/Cannot find module|Module not found|ERR_MODULE_NOT_FOUND|npm ERR! 404/i.test(logs)) {
+    if (files['/package.json'] || files['package.json']) {
+      foundPaths.add('/package.json');
+    }
+  }
+  if (/error TS\d+|tsconfig/i.test(logs)) {
+    if (files['/tsconfig.json'] || files['tsconfig.json']) {
+      foundPaths.add('/tsconfig.json');
+    }
+  }
+  if (/RollupError|vite:esbuild|vite\.config/i.test(logs)) {
+    if (files['/vite.config.ts'] || files['vite.config.ts']) {
+      foundPaths.add('/vite.config.ts');
+    }
+  }
+
+  if (foundPaths.size > 0) {
+    return Array.from(foundPaths).slice(0, 8).sort();
+  }
+
+  // 6. Project entry files fallback
   for (const defaultPath of ['/src/App.tsx', 'src/App.tsx', '/src/index.tsx', '/src/main.tsx']) {
     if (files[defaultPath]) {
       return [defaultPath.startsWith('/') ? defaultPath : `/${defaultPath}`];
     }
   }
 
-  // Fallback to first source file
-  const firstSrc = fileKeys.find((k) => k.includes('src/'));
+  // 7. First source file fallback
+  const firstSrc = Object.keys(files).find((k) => k.includes('src/'));
   if (firstSrc) {
     return [firstSrc.startsWith('/') ? firstSrc : `/${firstSrc}`];
   }
 
-  return fileKeys.slice(0, 3).sort();
+  return Object.keys(files).slice(0, 3).sort();
 }
 
 /**
@@ -192,6 +250,7 @@ export class RepairCoordinator {
     store.recordFingerprint(projectId, fingerprint, codeHash);
 
     // 6. Create new episode
+    sanitizedEvidence.projectId = projectId;
     const episode = store.createEpisode(projectId, sanitizedEvidence, fingerprint, evidenceFingerprint);
     console.log(`[RepairCoordinator] Captured new failure episode: '${episode.failureEpisodeId}' (Attempt 1 of ${episode.maxAttempts})`);
 
@@ -233,7 +292,7 @@ export class RepairCoordinator {
     useAgentStore.getState().setIsDiagnosing(true);
 
     try {
-      const { diagnosis, patch } = await repairLoopEngine.runDiagnosisAndPatch(
+      const { diagnosis, patch, plan } = await repairLoopEngine.runDiagnosisAndPatch(
         projectId,
         episode.evidence
       );
@@ -247,13 +306,13 @@ export class RepairCoordinator {
 
       // Check episode status wasn't cancelled or superseded or project deleted
       const currentEpisode = store.getProjectEpisodes(projectId).find((ep) => ep.failureEpisodeId === episodeId);
-      if (!currentEpisode || currentEpisode.status !== 'diagnosing') {
+      if (!currentEpisode || (currentEpisode.status !== 'diagnosing' && currentEpisode.status !== 'DIAGNOSING')) {
         console.log(`[RepairCoordinator] Episode '${episodeId}' was cancelled or deleted.`);
         return null;
       }
 
       const proposalFingerprint = `patch_${patch.id}_${patch.files.length}`;
-      store.setEpisodeProposal(projectId, episodeId, diagnosis, patch, proposalFingerprint);
+      store.setEpisodeProposal(projectId, episodeId, diagnosis, patch, proposalFingerprint, plan);
 
       // Synchronize canonical project-scoped state to agentStore
       useAgentStore.getState().setDiagnosis(diagnosis, projectId);
@@ -271,7 +330,7 @@ export class RepairCoordinator {
 
       useAgentStore.getState().setIsDiagnosing(false);
       const errorMsg = err?.message || 'AI Diagnosis failed.';
-      store.updateEpisodeStatus(projectId, episodeId, 'captured', { error: errorMsg });
+      store.markDiagnosisFailed(projectId, episodeId, errorMsg);
       console.warn(`[RepairCoordinator] Diagnosis error for episode '${episodeId}':`, errorMsg);
       throw err;
     } finally {
@@ -288,13 +347,13 @@ export class RepairCoordinator {
     projectId: string,
     episodeId: string,
     onProgress?: (stage: string, message: string) => void
-  ): Promise<{ verified: boolean; error?: string }> {
+  ): Promise<{ verified: boolean; error?: string; verificationResult?: VerificationResult }> {
     const store = useRepairStore.getState();
     const episode = store.getProjectEpisodes(projectId).find((ep) => ep.failureEpisodeId === episodeId);
     if (!episode || !episode.patch) {
       return { verified: false, error: 'No repair proposal found for this episode.' };
     }
-    if (episode.status !== 'proposal_ready') {
+    if (episode.status !== 'proposal_ready' && episode.status !== 'PATCH_READY' && episode.status !== 'AWAITING_APPROVAL') {
       return { verified: false, error: `Cannot approve episode in '${episode.status}' status.` };
     }
 
@@ -309,25 +368,31 @@ export class RepairCoordinator {
 
       // Stale verification check: ensure episode wasn't cancelled or superseded during verification
       const verifyEpisode = store.getProjectEpisodes(projectId).find((ep) => ep.failureEpisodeId === episodeId);
-      if (!verifyEpisode || verifyEpisode.status !== 'verifying') {
+      if (!verifyEpisode || (verifyEpisode.status !== 'verifying' && verifyEpisode.status !== 'VERIFYING')) {
         return { verified: false, error: 'Episode state was superseded or cancelled during verification.' };
       }
 
       if (result.verified) {
-        store.resolveEpisode(projectId, episodeId);
-        useAgentStore.getState().setPendingPatch(null);
+        store.resolveEpisode(projectId, episodeId, result.verificationResult);
+        useAgentStore.getState().setPendingPatch(null, projectId);
         useAgentStore.getState().setIsDiffModalOpen(false);
+        try {
+          const { useRuntimeStore } = await import('../../store/runtimeStore');
+          useRuntimeStore.getState().clearEvidence(projectId);
+        } catch {}
         console.log(`[RepairCoordinator] Episode '${episodeId}' resolved and verified successfully!`);
-        return { verified: true };
+        return { verified: true, verificationResult: result.verificationResult };
       } else {
         const errorMsg = result.error || 'Verification checks failed.';
-        store.rollbackEpisode(projectId, episodeId, errorMsg);
+        store.markVerificationFailed(projectId, episodeId, errorMsg);
+        store.rollbackEpisode(projectId, episodeId, errorMsg, result.verificationResult);
         console.warn(`[RepairCoordinator] Episode '${episodeId}' verification failed. Rolled back.`);
-        return { verified: false, error: errorMsg };
+        return { verified: false, error: errorMsg, verificationResult: result.verificationResult };
       }
     } catch (err: any) {
       useAgentStore.getState().setIsRepairing(false);
       const errorMsg = err?.message || 'Failed to apply repair patch.';
+      store.markVerificationFailed(projectId, episodeId, errorMsg);
       store.rollbackEpisode(projectId, episodeId, errorMsg);
       return { verified: false, error: errorMsg };
     }
@@ -339,7 +404,7 @@ export class RepairCoordinator {
   public rejectRepair(projectId: string, episodeId: string): void {
     const store = useRepairStore.getState();
     store.rejectEpisode(projectId, episodeId);
-    useAgentStore.getState().setPendingPatch(null);
+    useAgentStore.getState().setPendingPatch(null, projectId);
     useAgentStore.getState().setIsDiffModalOpen(false);
     console.log(`[RepairCoordinator] Episode '${episodeId}' rejected by user. Zero project files mutated.`);
   }

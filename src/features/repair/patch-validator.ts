@@ -59,6 +59,29 @@ function isValidProjectPath(rawPath: string): { valid: boolean; reason?: string 
     return { valid: false, reason: `System directory access rejected: ${rawPath}` };
   }
 
+  // Reject node_modules modification
+  if (
+    normalized.startsWith('/node_modules') ||
+    normalized.startsWith('node_modules') ||
+    segments.some((s) => s.toLowerCase() === 'node_modules')
+  ) {
+    return { valid: false, reason: `Modification of 'node_modules' rejected: ${rawPath}` };
+  }
+
+  // Reject git repository metadata
+  if (
+    normalized.startsWith('/.git') ||
+    normalized.startsWith('.git') ||
+    segments.some((s) => s.toLowerCase() === '.git')
+  ) {
+    return { valid: false, reason: `Modification of '.git' repository metadata rejected: ${rawPath}` };
+  }
+
+  // Reject sensitive environment files
+  if (/(?:^|\/)\.env(?:\..+)?$/i.test(normalized)) {
+    return { valid: false, reason: `Modification of sensitive environment file rejected: ${rawPath}` };
+  }
+
   return { valid: true };
 }
 
@@ -149,5 +172,66 @@ export function validatePatch(
     valid: errors.length === 0,
     errors,
     structuredErrors
+  };
+}
+
+export interface MinimalityValidationResult {
+  isMinimal: boolean;
+  warnings: string[];
+  errors: string[];
+}
+
+/**
+ * Validates that a proposed patch is minimal and surgical:
+ * 1. Checks that only relevant/affected files are modified.
+ * 2. Checks that changes are not no-ops (before !== after).
+ * 3. Detects accidental wipeouts or massive deletions.
+ */
+export function validatePatchMinimality(
+  patch: Patch,
+  _projectFiles: Record<string, { content: string }>,
+  affectedFiles?: string[]
+): MinimalityValidationResult {
+  const warnings: string[] = [];
+  const errors: string[] = [];
+
+  if (!patch || !patch.files || patch.files.length === 0) {
+    return { isMinimal: false, warnings, errors: ['Patch contains no file changes'] };
+  }
+
+  const normalizedAffected = (affectedFiles || []).map((p) => normalizePath(p));
+  const hasAffectedScope = normalizedAffected.length > 0;
+
+  for (const change of patch.files) {
+    const normPath = normalizePath(change.path);
+
+    // 1. Unrelated file check
+    if (hasAffectedScope && !normalizedAffected.includes(normPath)) {
+      const isCommonAllowedConfig = normPath === '/package.json' || normPath === '/tsconfig.json' || normPath === '/src/App.tsx';
+      if (!isCommonAllowedConfig && patch.files.length > 1) {
+        warnings.push(`File '${change.path}' was not identified in the diagnosis affected files (${affectedFiles?.join(', ')}).`);
+      }
+    }
+
+    // 2. No-op change check
+    if (change.before !== undefined && change.before === change.after) {
+      warnings.push(`Patch entry for '${change.path}' contains no effective changes (before === after).`);
+    }
+
+    // 3. Wholesale wipeout check (>80% deletion of substantive file)
+    if (change.before && change.before.length > 300 && change.after.length < change.before.length * 0.2) {
+      warnings.push(`File '${change.path}' lost more than 80% of its content. Ensure this is not an unintended rewrite.`);
+    }
+  }
+
+  // Reject patch if it modifies more than 5 files for a single failure
+  if (patch.files.length > 5) {
+    errors.push(`Patch modifies ${patch.files.length} files. Repairs must be minimal (maximum 5 files).`);
+  }
+
+  return {
+    isMinimal: errors.length === 0,
+    warnings,
+    errors
   };
 }

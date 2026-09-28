@@ -461,12 +461,28 @@ export const useProjectStore = create<ProjectStoreState>()(
         set((state) => {
           const project = state.projects[projectId];
           if (!project) return state;
+
+          const filePaths = Object.keys(vfsFiles);
+          const hasFile = (p: string) => {
+            const clean = p.replace(/\\/g, '/');
+            const unslashed = clean.replace(/^\/+/, '');
+            return Boolean(vfsFiles[clean] || vfsFiles[unslashed] || vfsFiles[`/${unslashed}`]);
+          };
+
+          const validTabs = (project.openTabs || []).filter(hasFile);
+          let validActive = project.activeFilePath;
+          if (validActive && !hasFile(validActive)) {
+            validActive = validTabs[0] || filePaths[0] || '';
+          }
+
           return {
             projects: {
               ...state.projects,
               [projectId]: {
                 ...project,
-                files: { ...vfsFiles }
+                files: { ...vfsFiles },
+                openTabs: validTabs,
+                activeFilePath: validActive
               }
             }
           };

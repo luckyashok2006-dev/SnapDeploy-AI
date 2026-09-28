@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { RepairEpisode, RepairEpisodeStatus, Diagnosis, Patch, ExecutionEvidence } from '../types/workspace';
+import { RepairEpisode, RepairEpisodeStatus, CanonicalRepairState, Diagnosis, Patch, ExecutionEvidence } from '../types/workspace';
 
 export interface ProcessedFailureRecord {
   fingerprint: string;
@@ -39,13 +39,19 @@ export interface RepairStoreState {
     episodeId: string,
     diagnosis: Diagnosis,
     patch: Patch,
-    proposalFingerprint?: string
+    proposalFingerprint?: string,
+    plan?: any | null
   ) => void;
 
-  resolveEpisode: (projectId: string, episodeId: string) => void;
+  resolveEpisode: (projectId: string, episodeId: string, verificationResult?: any | null) => void;
   rejectEpisode: (projectId: string, episodeId: string) => void;
-  rollbackEpisode: (projectId: string, episodeId: string, error?: string) => void;
+  rollbackEpisode: (projectId: string, episodeId: string, error?: string, verificationResult?: any | null) => void;
   blockEpisode: (projectId: string, episodeId: string, reason?: string) => void;
+
+  // Explicit Failure Branch Mutations (Phase B)
+  markDiagnosisFailed: (projectId: string, episodeId: string, error: string) => void;
+  markRepairFailed: (projectId: string, episodeId: string, error: string) => void;
+  markVerificationFailed: (projectId: string, episodeId: string, error: string) => void;
 
   // Loop Controls
   pauseLoop: (projectId: string) => void;
@@ -56,6 +62,92 @@ export interface RepairStoreState {
   // Project Isolation & Lifecycle
   clearProjectEpisodes: (projectId: string) => void;
   deleteProjectRepairState: (projectId: string) => void;
+}
+
+export function getCanonicalState(ep?: Partial<RepairEpisode> | null): CanonicalRepairState {
+  if (!ep || !ep.status) return 'IDLE';
+  if (ep.canonicalState) return ep.canonicalState;
+  switch (ep.status) {
+    case 'captured':
+    case 'ERROR_DETECTED':
+      return 'ERROR_DETECTED';
+    case 'diagnosing':
+    case 'DIAGNOSING':
+      return 'DIAGNOSING';
+    case 'DIAGNOSIS_READY':
+      return 'DIAGNOSIS_READY';
+    case 'REPAIRING':
+      return 'REPAIRING';
+    case 'proposal_ready':
+    case 'PATCH_READY':
+      return 'PATCH_READY';
+    case 'awaiting_approval':
+    case 'AWAITING_APPROVAL':
+      return 'AWAITING_APPROVAL';
+    case 'applying':
+    case 'APPLYING':
+      return 'APPLYING';
+    case 'verifying':
+    case 'VERIFYING':
+      return 'VERIFYING';
+    case 'resolved':
+    case 'REPAIRED':
+      return 'REPAIRED';
+    case 'rejected':
+    case 'PATCH_REJECTED':
+      return 'PATCH_REJECTED';
+    case 'rolled_back':
+    case 'ROLLED_BACK':
+      return 'ROLLED_BACK';
+    case 'DIAGNOSIS_FAILED':
+      return 'DIAGNOSIS_FAILED';
+    case 'REPAIR_FAILED':
+      return 'REPAIR_FAILED';
+    case 'VERIFICATION_FAILED':
+      return 'VERIFICATION_FAILED';
+    default:
+      return 'IDLE';
+  }
+}
+
+export function isEpisodeAwaitingApproval(ep?: RepairEpisode | null): boolean {
+  if (!ep) return false;
+  return ep.status === 'proposal_ready' || ep.status === 'PATCH_READY' || ep.status === 'AWAITING_APPROVAL' || ep.canonicalState === 'PATCH_READY' || ep.canonicalState === 'AWAITING_APPROVAL';
+}
+
+export function isEpisodeDiagnosing(ep?: RepairEpisode | null): boolean {
+  if (!ep) return false;
+  return ep.status === 'diagnosing' || ep.status === 'DIAGNOSING' || ep.status === 'REPAIRING' || ep.canonicalState === 'DIAGNOSING' || ep.canonicalState === 'REPAIRING';
+}
+
+export function isEpisodeApplying(ep?: RepairEpisode | null): boolean {
+  if (!ep) return false;
+  return ep.status === 'applying' || ep.status === 'APPLYING' || ep.canonicalState === 'APPLYING';
+}
+
+export function isEpisodeVerifying(ep?: RepairEpisode | null): boolean {
+  if (!ep) return false;
+  return ep.status === 'verifying' || ep.status === 'VERIFYING' || ep.canonicalState === 'VERIFYING';
+}
+
+export function isEpisodeResolved(ep?: RepairEpisode | null): boolean {
+  if (!ep) return false;
+  return ep.status === 'resolved' || ep.status === 'REPAIRED' || ep.canonicalState === 'REPAIRED';
+}
+
+export function isEpisodeRolledBack(ep?: RepairEpisode | null): boolean {
+  if (!ep) return false;
+  return ep.status === 'rolled_back' || ep.status === 'ROLLED_BACK' || ep.status === 'VERIFICATION_FAILED' || ep.canonicalState === 'ROLLED_BACK' || ep.canonicalState === 'VERIFICATION_FAILED';
+}
+
+export function isEpisodeRejected(ep?: RepairEpisode | null): boolean {
+  if (!ep) return false;
+  return ep.status === 'rejected' || ep.status === 'PATCH_REJECTED' || ep.canonicalState === 'PATCH_REJECTED';
+}
+
+export function isEpisodeBlocked(ep?: RepairEpisode | null): boolean {
+  if (!ep) return false;
+  return ep.status === 'blocked';
 }
 
 export const useRepairStore = create<RepairStoreState>((set, get) => ({
@@ -89,6 +181,7 @@ export const useRepairStore = create<RepairStoreState>((set, get) => ({
       failureFingerprint,
       evidenceFingerprint,
       status: 'captured',
+      canonicalState: 'ERROR_DETECTED',
       evidence,
       createdAt: new Date().toISOString(),
       lastAttemptAt: new Date().toISOString()
@@ -116,10 +209,12 @@ export const useRepairStore = create<RepairStoreState>((set, get) => ({
       const projectEpisodes = state.episodes[projectId] || [];
       const updated = projectEpisodes.map((ep) => {
         if (ep.failureEpisodeId === episodeId) {
+          const canonicalState = updates.canonicalState || getCanonicalState({ ...ep, status, ...updates });
           return {
             ...ep,
             ...updates,
             status,
+            canonicalState,
             lastAttemptAt: new Date().toISOString()
           };
         }
@@ -135,7 +230,7 @@ export const useRepairStore = create<RepairStoreState>((set, get) => ({
     });
   },
 
-  setEpisodeProposal: (projectId, episodeId, diagnosis, patch, proposalFingerprint) => {
+  setEpisodeProposal: (projectId, episodeId, diagnosis, patch, proposalFingerprint, plan) => {
     set((state) => {
       const projectEpisodes = state.episodes[projectId] || [];
       const updated = projectEpisodes.map((ep) => {
@@ -143,8 +238,10 @@ export const useRepairStore = create<RepairStoreState>((set, get) => ({
           return {
             ...ep,
             status: 'proposal_ready' as const,
+            canonicalState: 'PATCH_READY' as const,
             diagnosis,
             patch,
+            plan: plan !== undefined ? plan : (ep.plan || null),
             proposalFingerprint,
             lastAttemptAt: new Date().toISOString()
           };
@@ -161,7 +258,7 @@ export const useRepairStore = create<RepairStoreState>((set, get) => ({
     });
   },
 
-  resolveEpisode: (projectId, episodeId) => {
+  resolveEpisode: (projectId, episodeId, verificationResult) => {
     set((state) => {
       const projectEpisodes = state.episodes[projectId] || [];
       const updated = projectEpisodes.map((ep) => {
@@ -169,7 +266,9 @@ export const useRepairStore = create<RepairStoreState>((set, get) => ({
           return {
             ...ep,
             status: 'resolved' as const,
+            canonicalState: 'REPAIRED' as const,
             resolution: 'resolved' as const,
+            verificationResult: verificationResult !== undefined ? verificationResult : (ep.verificationResult || null),
             lastAttemptAt: new Date().toISOString()
           };
         }
@@ -197,6 +296,7 @@ export const useRepairStore = create<RepairStoreState>((set, get) => ({
           return {
             ...ep,
             status: 'rejected' as const,
+            canonicalState: 'PATCH_REJECTED' as const,
             resolution: 'rejected' as const,
             lastAttemptAt: new Date().toISOString()
           };
@@ -217,7 +317,7 @@ export const useRepairStore = create<RepairStoreState>((set, get) => ({
     });
   },
 
-  rollbackEpisode: (projectId, episodeId, error) => {
+  rollbackEpisode: (projectId, episodeId, error, verificationResult) => {
     set((state) => {
       const projectEpisodes = state.episodes[projectId] || [];
       const updated = projectEpisodes.map((ep) => {
@@ -228,8 +328,10 @@ export const useRepairStore = create<RepairStoreState>((set, get) => ({
             ...ep,
             attemptNumber: nextAttempt,
             status: isBlocked ? ('blocked' as const) : ('rolled_back' as const),
+            canonicalState: isBlocked ? ('ROLLED_BACK' as const) : ('ROLLED_BACK' as const),
             resolution: isBlocked ? ('max_attempts_reached' as const) : ('rolled_back' as const),
             error: error || ep.error,
+            verificationResult: verificationResult !== undefined ? verificationResult : (ep.verificationResult || null),
             lastAttemptAt: new Date().toISOString()
           };
         }
@@ -253,6 +355,7 @@ export const useRepairStore = create<RepairStoreState>((set, get) => ({
           return {
             ...ep,
             status: 'blocked' as const,
+            canonicalState: 'ROLLED_BACK' as const,
             resolution: 'max_attempts_reached' as const,
             error: reason || 'Maximum repair attempts reached.',
             lastAttemptAt: new Date().toISOString()
@@ -267,6 +370,27 @@ export const useRepairStore = create<RepairStoreState>((set, get) => ({
           [projectId]: updated
         }
       };
+    });
+  },
+
+  markDiagnosisFailed: (projectId, episodeId, error) => {
+    get().updateEpisodeStatus(projectId, episodeId, 'DIAGNOSIS_FAILED', {
+      error,
+      canonicalState: 'DIAGNOSIS_FAILED'
+    });
+  },
+
+  markRepairFailed: (projectId, episodeId, error) => {
+    get().updateEpisodeStatus(projectId, episodeId, 'REPAIR_FAILED', {
+      error,
+      canonicalState: 'REPAIR_FAILED'
+    });
+  },
+
+  markVerificationFailed: (projectId, episodeId, error) => {
+    get().updateEpisodeStatus(projectId, episodeId, 'VERIFICATION_FAILED', {
+      error,
+      canonicalState: 'VERIFICATION_FAILED'
     });
   },
 
