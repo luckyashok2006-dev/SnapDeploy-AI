@@ -89,6 +89,14 @@ export const AuthManager: React.FC<AuthManagerProps> = ({ projectId }) => {
     }
   }, [activeTab, isConfigured]);
 
+  useEffect(() => {
+    if (config?.roles && config.roles.length > 0) {
+      setRoles(config.roles);
+    } else {
+      setRoles(['user', 'admin']);
+    }
+  }, [projectId, config?.roles]);
+
   const handleProviderChange = (newProvider: AuthProviderId) => {
     setProviderId(newProvider);
     if (newProvider === 'mock') {
@@ -144,12 +152,20 @@ export const AuthManager: React.FC<AuthManagerProps> = ({ projectId }) => {
     }
   };
 
-  const handleAddRole = () => {
-    const trimmed = newRole.trim().toLowerCase();
-    if (trimmed && !roles.includes(trimmed)) {
-      setRoles([...roles, trimmed]);
-      setNewRole('');
+  const handleAddRole = (e?: React.MouseEvent | React.KeyboardEvent) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
     }
+    const trimmed = newRole.trim().toLowerCase();
+    if (!trimmed) {
+      setNewRole('');
+      return;
+    }
+    if (!roles.includes(trimmed)) {
+      setRoles([...roles, trimmed]);
+    }
+    setNewRole('');
   };
 
   const handleRemoveRole = (roleToRemove: string) => {
@@ -448,6 +464,7 @@ export const AuthManager: React.FC<AuthManagerProps> = ({ projectId }) => {
               {roles.map((r) => (
                 <span
                   key={r}
+                  data-testid={`auth-role-chip-${r}`}
                   className="px-2.5 py-1 rounded-lg bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 text-xs font-mono flex items-center gap-1.5"
                 >
                   <span>{r}</span>
@@ -455,7 +472,9 @@ export const AuthManager: React.FC<AuthManagerProps> = ({ projectId }) => {
                     <button
                       type="button"
                       onClick={() => handleRemoveRole(r)}
-                      className="text-indigo-400 hover:text-rose-400"
+                      aria-label={`Remove role ${r}`}
+                      data-testid={`auth-remove-role-${r}`}
+                      className="text-indigo-400 hover:text-rose-400 transition ml-0.5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-rose-500"
                     >
                       ×
                     </button>
@@ -467,15 +486,28 @@ export const AuthManager: React.FC<AuthManagerProps> = ({ projectId }) => {
             <div className="flex gap-2">
               <input
                 type="text"
+                id="auth-custom-role-input"
+                aria-label="Add custom application role"
+                data-testid="auth-role-input"
                 value={newRole}
                 onChange={(e) => setNewRole(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    handleAddRole(e);
+                  }
+                }}
                 placeholder="Add custom role (e.g. editor, viewer)"
-                className="flex-1 px-3 py-1.5 bg-slate-900 border border-white/10 rounded-lg text-xs text-white focus:outline-none focus:border-indigo-500"
+                className="flex-1 px-3 py-1.5 bg-slate-900 border border-white/10 rounded-lg text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-indigo-500 transition focus-visible:ring-1 focus-visible:ring-indigo-500"
               />
               <button
                 type="button"
                 onClick={handleAddRole}
-                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-medium transition"
+                aria-label="Add role"
+                data-testid="auth-add-role-btn"
+                disabled={!newRole.trim()}
+                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed text-slate-200 rounded-lg text-xs font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 shrink-0"
               >
                 Add Role
               </button>

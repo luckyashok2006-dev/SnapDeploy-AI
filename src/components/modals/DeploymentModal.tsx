@@ -60,16 +60,18 @@ export const DeploymentModal: React.FC<DeploymentModalProps> = ({
   const activeProgress = useDeploymentStore((s) => s.activeDeployments[projectId] || DEFAULT_PROGRESS);
 
   const project = useProjectStore((s) => s.projects[projectId]);
+  const isProd = isProductionEnvironment();
+  const effectiveProvider = isProd ? 'netlify' : selectedProvider;
 
   // In production, ensure mock provider is never treated as authenticated and reset to netlify
   useEffect(() => {
-    if (isProductionEnvironment() && selectedProvider === 'mock') {
+    if (isProd && selectedProvider === 'mock') {
       setSelectedProvider('netlify');
     }
-  }, [selectedProvider, setSelectedProvider]);
+  }, [isProd, selectedProvider, setSelectedProvider]);
 
-  const provider = getProviderInstance(selectedProvider);
-  const isAuthenticated = (!isProductionEnvironment() && selectedProvider === 'mock') || !!getCredentials(selectedProvider);
+  const provider = getProviderInstance(effectiveProvider);
+  const isAuthenticated = (!isProd && effectiveProvider === 'mock') || !!getCredentials(effectiveProvider);
 
   // Pre-deployment checklist
   const preChecks = isOpen && projectId ? runPreDeploymentChecks(projectId) : null;
@@ -86,7 +88,7 @@ export const DeploymentModal: React.FC<DeploymentModalProps> = ({
     setTokenError(null);
     try {
       await provider.authenticate(tokenInput.trim());
-      setCredentials(selectedProvider, tokenInput.trim());
+      setCredentials(effectiveProvider, tokenInput.trim());
       setTokenInput('');
     } catch (err: any) {
       setTokenError(err?.message || 'Authentication failed.');
@@ -97,13 +99,13 @@ export const DeploymentModal: React.FC<DeploymentModalProps> = ({
 
   // Handle start deploy / redeploy
   const handleStartDeploy = async () => {
-    if (isProductionEnvironment() && selectedProvider === 'mock') {
+    if (isProd && effectiveProvider === 'mock') {
       setTokenError('Mock deployment provider is disabled in production. Please configure Netlify.');
       return;
     }
 
     try {
-      await executeDeployment(projectId, { providerId: selectedProvider });
+      await executeDeployment(projectId, { providerId: effectiveProvider });
     } catch {
       // Error handled and rendered via store
     }
@@ -159,21 +161,33 @@ export const DeploymentModal: React.FC<DeploymentModalProps> = ({
             {/* Provider Switcher */}
             <div className="flex items-center gap-1 p-1 bg-slate-900 border border-white/10 rounded-xl text-xs">
               <button
-                onClick={() => setSelectedProvider('mock')}
-                className={`px-2.5 py-1 rounded-lg transition font-medium ${
-                  selectedProvider === 'mock'
+                type="button"
+                onClick={() => !isProd && setSelectedProvider('mock')}
+                disabled={isProd}
+                aria-disabled={isProd}
+                aria-label={isProd ? 'Mock Provider (Unavailable in production)' : 'Mock Provider (Test/Offline)'}
+                className={`px-2.5 py-1 rounded-lg transition font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 ${
+                  isProd
+                    ? 'opacity-40 cursor-not-allowed text-slate-500'
+                    : effectiveProvider === 'mock'
                     ? 'bg-violet-600 text-white shadow-sm'
                     : 'text-slate-400 hover:text-slate-200'
                 }`}
-                title="Use deterministic mock provider for testing and offline development"
+                title={
+                  isProd
+                    ? 'Mock Provider is unavailable in production. Live deployment uses Netlify.'
+                    : 'Use deterministic mock provider for testing and offline development'
+                }
                 data-testid="select-provider-mock"
               >
                 Mock Provider
               </button>
               <button
+                type="button"
                 onClick={() => setSelectedProvider('netlify')}
-                className={`px-2.5 py-1 rounded-lg transition font-medium ${
-                  selectedProvider === 'netlify'
+                aria-label="Netlify Hosting Provider"
+                className={`px-2.5 py-1 rounded-lg transition font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 ${
+                  effectiveProvider === 'netlify'
                     ? 'bg-violet-600 text-white shadow-sm'
                     : 'text-slate-400 hover:text-slate-200'
                 }`}
@@ -241,7 +255,7 @@ export const DeploymentModal: React.FC<DeploymentModalProps> = ({
           {activeTab === 'deploy' && (
             <div className="space-y-5">
               {/* Unauthenticated Netlify Connector */}
-              {!isAuthenticated && selectedProvider === 'netlify' && (
+              {!isAuthenticated && effectiveProvider === 'netlify' && (
                 <form
                   onSubmit={handleConnectProvider}
                   className="p-4 rounded-xl bg-slate-900/60 border border-white/10 space-y-3"
@@ -281,7 +295,7 @@ export const DeploymentModal: React.FC<DeploymentModalProps> = ({
               )}
 
               {/* Connected Provider Status Badge */}
-              {isAuthenticated && selectedProvider === 'netlify' && (
+              {isAuthenticated && effectiveProvider === 'netlify' && (
                 <div className="flex items-center justify-between p-3 rounded-xl bg-slate-900/40 border border-white/5 text-xs">
                   <div className="flex items-center gap-2">
                     <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
@@ -297,6 +311,17 @@ export const DeploymentModal: React.FC<DeploymentModalProps> = ({
                     <LogOut className="w-3 h-3" />
                     <span>Disconnect</span>
                   </button>
+                </div>
+              )}
+
+              {/* Connected Mock Provider Status Badge (Dev only) */}
+              {!isProd && effectiveProvider === 'mock' && (
+                <div className="flex items-center justify-between p-3 rounded-xl bg-slate-900/40 border border-white/5 text-xs">
+                  <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 rounded-full bg-violet-400" />
+                    <span className="font-medium text-slate-200">Mock Provider Active</span>
+                    <span className="text-slate-500 font-mono">(Local test / offline mode)</span>
+                  </div>
                 </div>
               )}
 

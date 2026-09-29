@@ -125,16 +125,22 @@ export class AuthCoordinator {
    */
   public async generateAuthSourceFiles(projectId: string, config: AuthConfig): Promise<void> {
     // 1. Generate /src/types/auth.ts in VFS
+    const roleList = config.roles && config.roles.length > 0 ? config.roles : ['user', 'admin'];
+    const roleUnion = roleList.map((r) => `'${r}'`).join(' | ') + ' | string';
+
     const typesContent = `// ---------------------------------------------------------------------------
 // Auto-generated Authentication Types for SnapDeploy AI
 // Source of truth: Connected Auth Configuration
+// Configured Application Roles: ${roleList.join(', ')}
 // ---------------------------------------------------------------------------
+
+export type AppRole = ${roleUnion};
 
 export interface User {
   id: string;
   email: string;
   name?: string;
-  role?: string;
+  role?: AppRole;
   createdAt: string;
 }
 

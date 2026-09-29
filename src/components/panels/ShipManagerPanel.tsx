@@ -5,6 +5,7 @@ import { useGitHubAuthStore } from '../../store/gitHubAuthStore';
 import { useProjectStore } from '../../store/projectStore';
 import { executeDeployment, getProviderInstance } from '../../features/deployment/deployment-coordinator';
 import { runPreDeploymentChecks } from '../../features/deployment/build/build-gate';
+import { isProductionEnvironment } from '../../lib/environment';
 
 interface ShipManagerPanelProps {
   projectId: string;
@@ -20,8 +21,10 @@ export const ShipManagerPanel: React.FC<ShipManagerPanelProps> = ({
   onOpenDeployModal
 }) => {
   const [activeTab, setActiveTab] = useState<'deploy' | 'github' | 'history'>('deploy');
+  const isProd = isProductionEnvironment();
 
   const { selectedProvider, setSelectedProvider, getCredentials, deployments, activeDeployments } = useDeploymentStore();
+  const effectiveProvider = isProd ? 'netlify' : selectedProvider;
   const { isAuthenticated: isGitHubAuthed, user: gitHubUser } = useGitHubAuthStore();
   const project = useProjectStore((s) => s.projects[projectId]);
 
@@ -32,7 +35,7 @@ export const ShipManagerPanel: React.FC<ShipManagerPanelProps> = ({
 
   const handleStartDeploy = async () => {
     try {
-      await executeDeployment(projectId, { providerId: selectedProvider });
+      await executeDeployment(projectId, { providerId: effectiveProvider });
     } catch {
       // Handled in store
     }
@@ -131,23 +134,37 @@ export const ShipManagerPanel: React.FC<ShipManagerPanelProps> = ({
               <div className="grid grid-cols-2 gap-2">
                 <button
                   type="button"
-                  onClick={() => setSelectedProvider('mock')}
-                  className={`py-1.5 px-3 rounded-lg border text-center transition font-medium text-xs truncate ${
-                    selectedProvider === 'mock'
+                  onClick={() => !isProd && setSelectedProvider('mock')}
+                  disabled={isProd}
+                  aria-disabled={isProd}
+                  aria-label={isProd ? 'Mock Provider (Unavailable in production)' : 'Mock Provider (Test/Offline)'}
+                  className={`py-1.5 px-3 rounded-lg border text-center transition font-medium text-xs truncate focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 ${
+                    isProd
+                      ? 'opacity-40 cursor-not-allowed text-slate-500 bg-[#111827] border-white/5'
+                      : effectiveProvider === 'mock'
                       ? 'bg-violet-600/20 border-violet-500/40 text-violet-300'
                       : 'bg-[#111827] border-white/5 text-slate-400 hover:text-white'
                   }`}
+                  title={
+                    isProd
+                      ? 'Mock Provider is disabled in production. Use Netlify for live deployment.'
+                      : 'Deterministic mock provider for testing and offline development'
+                  }
+                  data-testid="ship-select-provider-mock"
                 >
                   Mock Provider
                 </button>
                 <button
                   type="button"
                   onClick={() => setSelectedProvider('netlify')}
-                  className={`py-1.5 px-3 rounded-lg border text-center transition font-medium text-xs truncate ${
-                    selectedProvider === 'netlify'
+                  aria-label="Netlify Hosting Provider"
+                  className={`py-1.5 px-3 rounded-lg border text-center transition font-medium text-xs truncate focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 ${
+                    effectiveProvider === 'netlify'
                       ? 'bg-violet-600/20 border-violet-500/40 text-violet-300'
                       : 'bg-[#111827] border-white/5 text-slate-400 hover:text-white'
                   }`}
+                  title="Direct deployment to Netlify"
+                  data-testid="ship-select-provider-netlify"
                 >
                   Netlify
                 </button>
