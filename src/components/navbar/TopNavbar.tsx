@@ -98,7 +98,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
 
   const [aiStatus, setAiStatus] = useState<{ provider: string; model: string; configured: boolean }>({
     provider: 'Google Gemini',
-    model: 'gemini-2.5-flash',
+    model: 'gemini-3.5-flash-lite',
     configured: false
   });
 
@@ -108,7 +108,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
         if (data?.ai) {
           setAiStatus({
             provider: 'Google Gemini',
-            model: data.ai.model || 'gemini-2.5-flash',
+            model: data.ai.model || 'gemini-3.5-flash-lite',
             configured: !!data.ai.configured
           });
         }

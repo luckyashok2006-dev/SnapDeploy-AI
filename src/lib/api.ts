@@ -51,11 +51,25 @@ export async function apiRequest<T = any>(
     let errorMsg = `API request to ${endpoint} failed (${res.status})`;
     try {
       const errData = await res.json();
-      errorMsg = errData.error || errData.message || errorMsg;
+      if (errData) {
+        if (typeof errData.error === 'string' && errData.error.trim()) {
+          errorMsg = errData.error;
+        } else if (typeof errData.error === 'object' && errData.error !== null) {
+          if (typeof errData.error.message === 'string' && errData.error.message.trim()) {
+            errorMsg = errData.error.message;
+          } else if (typeof errData.error.error === 'string' && errData.error.error.trim()) {
+            errorMsg = errData.error.error;
+          } else if (typeof errData.error.code === 'string' && errData.error.code.trim()) {
+            errorMsg = errData.error.code;
+          }
+        } else if (typeof errData.message === 'string' && errData.message.trim()) {
+          errorMsg = errData.message;
+        }
+      }
     } catch {
       try {
         const text = await res.text();
-        if (text) errorMsg = text;
+        if (text && text.trim()) errorMsg = text.trim();
       } catch {}
     }
     const err: any = new Error(errorMsg);
